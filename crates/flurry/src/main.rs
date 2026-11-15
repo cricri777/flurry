@@ -3,6 +3,7 @@ mod config;
 mod modes;
 mod session;
 mod store;
+mod ui;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use crossterm::{
@@ -395,24 +396,29 @@ fn tui() -> Result<(), String> {
     run_tui(&items).map_err(|e| e.to_string())
 }
 
+// Restores the terminal however the TUI loop exits, including on errors.
+struct TermGuard;
+
+impl Drop for TermGuard {
+    fn drop(&mut self) {
+        let _ = execute!(stdout(), crossterm::cursor::Show, LeaveAlternateScreen);
+        let _ = terminal::disable_raw_mode();
+    }
+}
+
 fn run_tui(items: &[String]) -> std::io::Result<()> {
     terminal::enable_raw_mode()?;
-    execute!(stdout(), EnterAlternateScreen)?;
+    let _guard = TermGuard;
+    execute!(stdout(), EnterAlternateScreen, crossterm::cursor::Hide)?;
     let mut s = State {
         mode: Mode::Normal,
         cursor: 0,
         buffer: String::new(),
     };
+    let theme = ui::Theme::terminal();
     loop {
-        let height = terminal::size()?.1 as usize;
-        let rows = height.saturating_sub(3).max(1);
-        let start = s.cursor.saturating_sub(rows - 1);
-        let mut out =
-            String::from("FLURRY roles - j/k move, / search, : command, Esc normal, q quit\r\n");
-        for (i, item) in items.iter().enumerate().skip(start).take(rows) {
-            out += &format!("{} {item}\r\n", if i == s.cursor { ">" } else { " " });
-        }
-        out += &format!("-- {:?} -- {}\r\n", s.mode, s.buffer);
+        let (w, h) = terminal::size()?;
+        let out = ui::render(items, &s, w as usize, h as usize, &theme);
         execute!(
             stdout(),
             crossterm::cursor::MoveTo(0, 0),
@@ -435,8 +441,7 @@ fn run_tui(items: &[String]) -> std::io::Result<()> {
         };
         s = handle_key(s, key, items.len());
     }
-    execute!(stdout(), LeaveAlternateScreen)?;
-    terminal::disable_raw_mode()
+    Ok(())
 }
 
 #[tokio::main]
