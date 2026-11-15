@@ -31,6 +31,7 @@ flurry [command]
 - The active role therefore needs access to `SNOWFLAKE.ACCOUNT_USAGE` and a warehouse for those queries.
 - Grant data can be up to 120 minutes old; `status` labels it.
 - A snapshot is written in one transaction, so a failed sync keeps the previous snapshot.
+- If an `ACCOUNT_USAGE` grant query fails (for example no access), the snapshot is still saved and `status` shows that dataset as `FAILED` with the error; its data is unknown, not empty.
 - Only `SHOW` and `SELECT` statements are ever sent, and user email addresses are not collected.
 
 ## Local files
@@ -64,5 +65,4 @@ Connections follow the [Snowflake CLI format](https://docs.snowflake.com/en/deve
 ## Not supported yet
 
 - Role inheritance queries, access explanations, snapshot history and exports.
-- Targeted refresh of one user, role or warehouse.
 - Search inside the TUI.

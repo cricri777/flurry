@@ -167,7 +167,13 @@ async fn sync(p: &Profile) -> Result<(), String> {
         snap.fingerprint, snap.active_role
     );
     for d in &snap.datasets {
-        println!("  {:<22} {}", d.name, d.rows);
+        match &d.error {
+            None => println!("  {:<22} {}", d.name, d.rows),
+            Some(err) => println!("  {:<22} FAILED: {err}", d.name),
+        }
+    }
+    if snap.datasets.iter().any(|d| d.error.is_some()) {
+        eprintln!("Warning: some datasets failed; their data is unknown, not empty.");
     }
     Ok(())
 }
