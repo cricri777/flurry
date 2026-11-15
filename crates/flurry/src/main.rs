@@ -31,12 +31,13 @@ struct Cli {
 enum Cmd {
     /// Collect a metadata snapshot from Snowflake into the local database.
     Sync(Profile),
-    /// Re-read one user, role or warehouse and its grants into the latest snapshot.
+    /// Re-read one user, role or warehouse (or all of them without a kind) into the latest snapshot.
     Refresh {
-        #[arg(value_enum)]
-        kind: Kind,
+        #[arg(value_enum, requires = "name")]
+        kind: Option<Kind>,
         /// Exact name of the entity.
-        name: String,
+        #[arg(requires = "kind")]
+        name: Option<String>,
         #[command(flatten)]
         profile: Profile,
     },
@@ -190,23 +191,41 @@ async fn sync(p: &Profile) -> Result<(), String> {
     Ok(())
 }
 
-async fn refresh(kind: Kind, name: &str, p: &Profile) -> Result<(), String> {
-    let entity = match kind {
-        Kind::User => Entity::Users,
-        Kind::Role => Entity::Roles,
-        Kind::Warehouse => Entity::Warehouses,
-    };
+async fn refresh(kind: Option<Kind>, name: Option<String>, p: &Profile) -> Result<(), String> {
     let mut store = Store::open()?;
     if store.latest()?.is_none() {
         return Err("No snapshot yet. Run `flurry sync` first.".into());
     }
-    let snap = collect::refresh(&connect(p).await?, entity, name).await?;
-    let id = store.refresh(entity, name, &snap)?;
-    println!("Refreshed {name} in snapshot {id}");
-    for d in &snap.datasets {
-        println!("  {:<30} {}", d.name, d.rows);
+    let targets: Vec<(Entity, String)> = match (kind, name) {
+        (Some(k), Some(n)) => vec![(entity_of(k), n)],
+        _ => {
+            let mut all = Vec::new();
+            for entity in [Entity::Users, Entity::Roles, Entity::Warehouses] {
+                for row in store.list(entity, "")?.rows {
+                    all.push((entity, row.into_iter().next().unwrap_or_default()));
+                }
+            }
+            all
+        }
+    };
+    let session = connect(p).await?;
+    for (entity, name) in targets {
+        let snap = collect::refresh(&session, entity, &name).await?;
+        let id = store.refresh(entity, &name, &snap)?;
+        println!("Refreshed {name} in snapshot {id}");
+        for d in &snap.datasets {
+            println!("  {:<30} {}", d.name, d.rows);
+        }
     }
     Ok(())
+}
+
+fn entity_of(kind: Kind) -> Entity {
+    match kind {
+        Kind::User => Entity::Users,
+        Kind::Role => Entity::Roles,
+        Kind::Warehouse => Entity::Warehouses,
+    }
 }
 
 fn status() -> Result<(), String> {
@@ -382,7 +401,7 @@ async fn main() {
             kind,
             name,
             profile,
-        }) => refresh(kind, &name, &profile).await,
+        }) => refresh(kind, name, &profile).await,
         Some(Cmd::Status) => status(),
         Some(Cmd::Connection {
             action: ConnectionCmd::Test(p),
