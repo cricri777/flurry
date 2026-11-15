@@ -2,6 +2,8 @@
 
 This roadmap defines a deliberately incremental path from a technical proof of concept to a useful public release. Complete each milestone's exit criteria before moving on. The roadmap is a plan, not a promise about release dates.
 
+**Status:** Milestone 0 is done in Rust instead of Bun; Milestone 1 is in progress (sync of users, roles, warehouses and grants into SQLite works).
+
 ## Product principles
 
 - **Local-first:** metadata is stored and queried locally; local queries never require Snowflake connectivity.
