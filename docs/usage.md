@@ -17,6 +17,7 @@ flurry [command]
 | `flurry refresh user\|role\|warehouse <name> [-p <profile>]` | Re-reads one entity and its grants with targeted `SHOW` commands into the latest snapshot. |
 | `flurry users\|roles\|warehouses list [-s <text>] [-f table\|json]` | Lists entities from the latest snapshot, offline. |
 
+- `refresh` stops if the login's account fingerprint differs from the latest snapshot's; run `sync` to start a new snapshot.
 - Only `sync`, `refresh` and `connection test` contact Snowflake; everything else is local.
 - Progress goes to stderr and results to stdout; errors exit with status 1.
 

@@ -179,10 +179,13 @@ async fn refresh(kind: Kind, name: &str, p: &Profile) -> Result<(), String> {
         Kind::Warehouse => Entity::Warehouses,
     };
     let mut store = Store::open()?;
-    if store.latest()?.is_none() {
-        return Err("No snapshot yet. Run `flurry sync` first.".into());
-    }
-    let snap = collect::refresh(&connect(p).await?, entity, name).await?;
+    let latest = store
+        .latest()?
+        .ok_or("No snapshot yet. Run `flurry sync` first.")?;
+    let session = connect(p).await?;
+    let identity = session.query(collect::IDENTITY_SQL).await?;
+    collect::ensure_same_account(&latest.rows[0][5], &collect::fingerprint(&identity))?;
+    let snap = collect::refresh(&session, entity, name).await?;
     let id = store.refresh(entity, name, &snap)?;
     println!("Refreshed {name} in snapshot {id}");
     for d in &snap.datasets {
