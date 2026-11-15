@@ -36,7 +36,14 @@ target/debug/flurry users list --format json
 
 ## TUI
 
-Agents run in their own bash session without a terminal, so they do not drive the TUI. Verify TUI behavior with unit tests and the CLI commands above.
+Open the TUI and send keys in a pseudo-terminal, with no tmux. Each argument is one key sequence; the script prints the final screen and quits:
+
+```bash
+python3 .claude/skills/flurry-verification/tui.py target/debug/flurry            # start screen
+python3 .claude/skills/flurry-verification/tui.py target/debug/flurry j j        # move down twice
+```
+
+Keys: `j`/`k` move, `/` search, `:` command, `Esc` normal mode, `q` quit. Use the same exported `XDG_*` variables as above.
 
 ## Test config handling
 
