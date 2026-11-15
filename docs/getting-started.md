@@ -4,7 +4,7 @@ The happy path: configure a default Snowflake connection, install `flurry`, sync
 
 ## 1. Configure a default connection
 
-Create `~/.snowflake/config.toml` (or `~/.config/snowflake/config.toml`) in the [Snowflake CLI format](https://docs.snowflake.com/en/developer-guide/snowflake-cli/connecting/configure-cli); flurry uses the connection named `default`, or the one set by `default_connection_name`.
+Create a `config.toml` in the [Snowflake CLI format](https://docs.snowflake.com/en/developer-guide/snowflake-cli/connecting/configure-cli); the file locations, profile selection rules and login methods are in [usage.md](usage.md#snowflake-configuration).
 
 ```toml
 default_connection_name = "default"
@@ -22,14 +22,11 @@ user = "MY_USER"
 authenticator = "externalbrowser"
 ```
 
-- Find your account identifier in [Account identifiers](https://docs.snowflake.com/en/user-guide/admin-account-identifier).
-- Other login methods (MFA password, key pair) are listed in [usage.md](usage.md#authentication).
-- Keep the file private (`chmod 600`) and never commit it.
-- The role needs access to `SNOWFLAKE.ACCOUNT_USAGE` and a warehouse, see [Sync](usage.md#sync).
+Find your account identifier in [Account identifiers](https://docs.snowflake.com/en/user-guide/admin-account-identifier).
 
 ## 2. Install flurry
 
-Install [Rust](https://rustup.rs), then from the repository root:
+With [Rust](https://rustup.rs) installed, run this from the repository root:
 
 ```bash
 cargo install --path crates/flurry
@@ -56,7 +53,7 @@ flurry connection test -p test
 flurry sync --profile test
 ```
 
-`SNOWFLAKE_DEFAULT_CONNECTION_NAME` also changes the default for the shell session. The profile only affects commands that contact Snowflake (`connection test`, `sync`, `refresh`); `status` and the `list` commands read the latest local snapshot, whichever profile created it.
+The profile only affects commands that contact Snowflake (`connection test`, `sync`, `refresh`); `status` and the `list` commands read the latest local snapshot, whichever profile created it.
 
 ## 4. Query users, roles and warehouses
 
@@ -68,4 +65,4 @@ flurry roles list --search analyst
 flurry warehouses list --format json
 ```
 
-Run `flurry sync` again whenever you want fresher data; see [usage.md](usage.md) for every command.
+See [usage.md](usage.md) for every command.

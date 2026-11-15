@@ -38,15 +38,7 @@ The first build downloads and compiles about 270 crates and takes a couple of mi
 
 ### 3. Run flurry
 
-Run these from the repository root; connection setup is documented in [docs/usage.md](docs/usage.md).
-
-```bash
-cargo run -p flurry -- connection test   # needs a dedicated test account
-cargo run -p flurry -- sync              # writes the local snapshot
-cargo run -p flurry -- status
-cargo run -p flurry -- roles list
-cargo run -p flurry                      # TUI over the local roles
-```
+Use `cargo run -p flurry -- <args>` from the repository root; setup and the first commands are in [docs/getting-started.md](docs/getting-started.md).
 
 ### 4. Daily commands
 
@@ -54,7 +46,6 @@ cargo run -p flurry                      # TUI over the local roles
 cargo fmt --all                                   # format
 cargo clippy --workspace --all-targets            # lint; fix all warnings
 cargo test --workspace                            # run tests
-cargo run -p <crate> -- <args>                    # run a binary crate
 ```
 
 ### Rust tips for newcomers
