@@ -132,6 +132,22 @@ enum Kind {
 enum Format {
     Table,
     Json,
+    Csv,
+}
+
+/// Joins cells into one RFC 4180 line, quoting cells that contain a comma, quote or newline.
+fn csv_line(cells: &[String]) -> String {
+    let cells: Vec<String> = cells
+        .iter()
+        .map(|c| {
+            if c.contains([',', '"', '\n', '\r']) {
+                format!("\"{}\"", c.replace('"', "\"\""))
+            } else {
+                c.clone()
+            }
+        })
+        .collect();
+    cells.join(",")
 }
 
 fn print_table(t: &Table, format: Format) {
@@ -157,6 +173,12 @@ fn print_table(t: &Table, format: Format) {
                 "{}",
                 serde_json::to_string_pretty(&rows).unwrap_or_default()
             );
+        }
+        Format::Csv => {
+            println!("{}", csv_line(&t.headers));
+            for r in &t.rows {
+                println!("{}", csv_line(r));
+            }
         }
         Format::Table => {
             let widths: Vec<usize> = (0..t.headers.len())
@@ -366,6 +388,18 @@ fn access(user: &str, warehouse: &str, privilege: &str, format: Format) -> Resul
         }
     };
     match format {
+        Format::Csv => {
+            let rows = if paths.is_empty() {
+                vec![vec![verdict.to_string(), String::new(), String::new()]]
+            } else {
+                paths
+                    .iter()
+                    .map(|p| vec![verdict.to_string(), chain(p), p.implicit.to_string()])
+                    .collect()
+            };
+            let headers = ["result", "path", "implicit"].map(String::from).to_vec();
+            print_table(&Table { headers, rows }, format);
+        }
         Format::Json => println!(
             "{}",
             serde_json::to_string_pretty(&json!({
@@ -532,11 +566,17 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::ident;
+    use super::{csv_line, ident};
 
     #[test]
     fn ident_upper_cases_unquoted_names_only() {
         assert_eq!(ident("jane"), "JANE");
         assert_eq!(ident("\"Mixed\"\"Case\""), "Mixed\"Case");
+    }
+
+    #[test]
+    fn csv_quotes_only_when_needed() {
+        let cells = ["a".to_string(), "b,c".to_string(), "say \"hi\"".to_string()];
+        assert_eq!(csv_line(&cells), "a,\"b,c\",\"say \"\"hi\"\"\"");
     }
 }
