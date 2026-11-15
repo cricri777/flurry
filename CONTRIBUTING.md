@@ -11,7 +11,7 @@ Thanks for your interest in contributing to Flurry. Flurry is an early-stage, lo
 
 ## Development status
 
-Flurry is in Milestone 0. The only runnable code is the compatibility spike in `crates/flurry-spike`; the rest of the README describes the target design.
+Flurry is in Milestone 1: the `flurry` crate can sync a metadata snapshot into SQLite and list it locally; the rest of the README describes the target design.
 
 ## Development setup
 
@@ -36,35 +36,17 @@ cargo build --workspace
 
 The first build downloads and compiles about 270 crates and takes a couple of minutes; later builds are incremental.
 
-### 3. Run the spike
+### 3. Run flurry
 
-Run these from the repository root; the argument after `--` picks the spike step.
-
-```bash
-cargo run -p flurry-spike -- sqlite   # writes and reads spike.sqlite, no account needed
-cargo run -p flurry-spike -- tui      # j/k move, / search, : command, Esc normal, q quit
-cargo run -p flurry-spike -- snowflake
-```
-
-The `snowflake` step needs a dedicated test account and key-pair auth:
+Run these from the repository root; connection setup is documented in [docs/usage.md](docs/usage.md).
 
 ```bash
-openssl genrsa 2048 | openssl pkcs8 -topk8 -inform PEM -nocrypt -out rsa_key.p8
-openssl rsa -in rsa_key.p8 -pubout -out rsa_key.pub
+cargo run -p flurry -- connection test   # needs a dedicated test account
+cargo run -p flurry -- sync              # writes the local snapshot
+cargo run -p flurry -- status
+cargo run -p flurry -- roles list
+cargo run -p flurry                      # TUI over the local roles
 ```
-
-In Snowflake, register the public key on your test user with `ALTER USER <you> SET RSA_PUBLIC_KEY='<key body without header/footer>';`, then export:
-
-```bash
-export FLURRY_SF_ACCOUNT=<ORG-ACCOUNT>      # uppercase account identifier
-export FLURRY_SF_USER=<test_user>
-export FLURRY_SF_PRIVATE_KEY=./rsa_key.p8   # never commit this file
-export FLURRY_SF_ROLE=<read_only_role>      # optional
-export FLURRY_SF_WAREHOUSE=<warehouse>      # optional, needed for ACCOUNT_USAGE queries
-cargo run -p flurry-spike -- snowflake
-```
-
-Browser SSO is not supported by `snowflake-api`, so key-pair auth is the only mode for now.
 
 ### 4. Daily commands
 
@@ -81,7 +63,7 @@ cargo run -p <crate> -- <args>                    # run a binary crate
 - `cargo check` is much faster than `cargo build` while iterating.
 - Read compiler errors top to bottom; they usually include the fix.
 - Avoid `unwrap()` outside tests; return `Result` and use `?`.
-- Avoid `unsafe`; the only allowed use is the FFI boundary in `flurry-spike/src/sqlite.rs`, with each call checked.
+- Avoid `unsafe`.
 - Add a dependency only when std can't do the job, with `cargo add <crate>` in the crate that needs it.
 
 ## Architecture boundaries
@@ -94,7 +76,7 @@ Each responsibility lives in its own crate under `crates/` (planned crates in it
 - *`flurry-storage`*: SQLite migrations and repositories; never store credentials or tokens.
 - *`flurry-sync`*: collection plans, progress, freshness/coverage metadata, atomic snapshot lifecycle.
 - *`flurry-cli`* / *`flurry-tui`*: output formatting and terminal UI; they call application services and never query Snowflake directly.
-- `flurry-spike`: throwaway Milestone 0 experiments; delete once M0 is closed.
+- `flurry`: the CLI, Snowflake session, collector and SQLite store.
 
 The CLI and TUI must share the same services and local data model. Keep the graph engine testable with in-memory synthetic fixtures.
 

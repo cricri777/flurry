@@ -3,7 +3,7 @@
 > A local-first Snowflake RBAC explorer for your terminal.
 
 > [!WARNING]
-> Work in progress and unstable: only a feasibility spike exists, and everything may change without notice.
+> Work in progress and unstable: only a feasibility spike exists, and everything may change without notice. The implementation is Rust; the Bun/OpenTUI sections below are the original plan.
 
 Flurry is an interactive terminal application for exploring Snowflake users, account roles, virtual warehouses, grants, and role inheritance. It is designed for Snowflake platform engineers and administrators working in large accounts where the native UI makes relationship discovery and repeated lookups cumbersome.
 

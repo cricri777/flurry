@@ -1,0 +1,357 @@
+use crate::collect::Snapshot;
+use crate::config;
+use rusqlite::{Connection, params};
+
+const SCHEMA: &str = "
+CREATE TABLE IF NOT EXISTS snapshots (
+  id INTEGER PRIMARY KEY, profile TEXT NOT NULL, account TEXT NOT NULL,
+  active_role TEXT NOT NULL, created_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS datasets (
+  snapshot_id INTEGER NOT NULL, name TEXT NOT NULL, source TEXT NOT NULL,
+  latency_minutes INTEGER, row_count INTEGER NOT NULL, collected_at INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS users (
+  snapshot_id INTEGER NOT NULL, name TEXT NOT NULL, login_name TEXT,
+  default_role TEXT, disabled TEXT, created_on TEXT);
+CREATE TABLE IF NOT EXISTS roles (
+  snapshot_id INTEGER NOT NULL, name TEXT NOT NULL, owner TEXT, created_on TEXT, comment TEXT);
+CREATE TABLE IF NOT EXISTS warehouses (
+  snapshot_id INTEGER NOT NULL, name TEXT NOT NULL, owner TEXT, type TEXT,
+  size TEXT, created_on TEXT, comment TEXT);
+CREATE TABLE IF NOT EXISTS user_roles (
+  snapshot_id INTEGER NOT NULL, user_name TEXT NOT NULL, role_name TEXT NOT NULL,
+  granted_by TEXT, created_on TEXT);
+CREATE TABLE IF NOT EXISTS role_edges (
+  snapshot_id INTEGER NOT NULL, parent TEXT NOT NULL, child TEXT NOT NULL,
+  granted_by TEXT, created_on TEXT);
+CREATE TABLE IF NOT EXISTS warehouse_privileges (
+  snapshot_id INTEGER NOT NULL, role_name TEXT NOT NULL, warehouse TEXT NOT NULL,
+  privilege TEXT NOT NULL, grant_option TEXT, granted_by TEXT);
+CREATE INDEX IF NOT EXISTS i_users ON users (snapshot_id, name);
+CREATE INDEX IF NOT EXISTS i_roles ON roles (snapshot_id, name);
+CREATE INDEX IF NOT EXISTS i_warehouses ON warehouses (snapshot_id, name);
+CREATE INDEX IF NOT EXISTS i_user_roles ON user_roles (snapshot_id, user_name);
+CREATE INDEX IF NOT EXISTS i_role_edges ON role_edges (snapshot_id, parent);
+CREATE INDEX IF NOT EXISTS i_wh_priv ON warehouse_privileges (snapshot_id, role_name);
+";
+
+pub struct Store(Connection);
+
+/// A table of strings: column headers and rows.
+pub struct Table {
+    pub headers: Vec<String>,
+    pub rows: Vec<Vec<String>>,
+}
+
+fn e(err: rusqlite::Error) -> String {
+    err.to_string()
+}
+
+fn ts(col: &str) -> String {
+    format!("datetime({col}, 'unixepoch')")
+}
+
+impl Store {
+    pub fn open() -> Result<Self, String> {
+        let dir = config::data_dir().ok_or("HOME not set")?;
+        std::fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+        let path = dir.join("flurry.db");
+        let conn = Connection::open(&path).map_err(e)?;
+        config::restrict(&dir, 0o700);
+        config::restrict(&path, 0o600);
+        conn.execute_batch(SCHEMA).map_err(e)?;
+        Ok(Self(conn))
+    }
+
+    #[cfg(test)]
+    fn in_memory() -> Self {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(SCHEMA).unwrap();
+        Self(conn)
+    }
+
+    /// Writes a snapshot in one transaction, so a failure keeps the previous snapshot intact.
+    pub fn save(&mut self, profile: &str, s: &Snapshot) -> Result<i64, String> {
+        let tx = self.0.transaction().map_err(e)?;
+        tx.execute(
+            "INSERT INTO snapshots (profile, account, active_role, created_at) VALUES (?, ?, ?, strftime('%s','now'))",
+            params![profile, s.account, s.active_role],
+        )
+        .map_err(e)?;
+        let id = tx.last_insert_rowid();
+        for d in &s.datasets {
+            tx.execute(
+                "INSERT INTO datasets VALUES (?, ?, ?, ?, ?, ?)",
+                params![
+                    id,
+                    d.name,
+                    d.source,
+                    d.latency_minutes,
+                    d.rows as i64,
+                    d.collected_at as i64
+                ],
+            )
+            .map_err(e)?;
+        }
+        for u in &s.users {
+            tx.execute(
+                "INSERT INTO users VALUES (?, ?, ?, ?, ?, ?)",
+                params![
+                    id,
+                    u.name,
+                    u.login_name,
+                    u.default_role,
+                    u.disabled,
+                    u.created_on
+                ],
+            )
+            .map_err(e)?;
+        }
+        for r in &s.roles {
+            tx.execute(
+                "INSERT INTO roles VALUES (?, ?, ?, ?, ?)",
+                params![id, r.name, r.owner, r.created_on, r.comment],
+            )
+            .map_err(e)?;
+        }
+        for w in &s.warehouses {
+            tx.execute(
+                "INSERT INTO warehouses VALUES (?, ?, ?, ?, ?, ?, ?)",
+                params![id, w.name, w.owner, w.kind, w.size, w.created_on, w.comment],
+            )
+            .map_err(e)?;
+        }
+        for g in &s.user_roles {
+            tx.execute(
+                "INSERT INTO user_roles VALUES (?, ?, ?, ?, ?)",
+                params![id, g.user, g.role, g.granted_by, g.created_on],
+            )
+            .map_err(e)?;
+        }
+        for g in &s.role_edges {
+            tx.execute(
+                "INSERT INTO role_edges VALUES (?, ?, ?, ?, ?)",
+                params![id, g.parent, g.child, g.granted_by, g.created_on],
+            )
+            .map_err(e)?;
+        }
+        for g in &s.warehouse_privileges {
+            tx.execute(
+                "INSERT INTO warehouse_privileges VALUES (?, ?, ?, ?, ?, ?)",
+                params![
+                    id,
+                    g.role,
+                    g.warehouse,
+                    g.privilege,
+                    g.grant_option,
+                    g.granted_by
+                ],
+            )
+            .map_err(e)?;
+        }
+        tx.commit().map_err(e)?;
+        Ok(id)
+    }
+
+    fn table(&self, sql: &str, args: &[&dyn rusqlite::ToSql]) -> Result<Table, String> {
+        let mut stmt = self.0.prepare(sql).map_err(e)?;
+        let headers: Vec<String> = stmt.column_names().map(|c| c.to_string()).collect();
+        let n = headers.len();
+        let rows = stmt
+            .query_map(args, |r| {
+                (0..n)
+                    .map(|i| {
+                        Ok(match r.get_ref(i)? {
+                            rusqlite::types::ValueRef::Null => String::new(),
+                            rusqlite::types::ValueRef::Integer(v) => v.to_string(),
+                            rusqlite::types::ValueRef::Real(v) => v.to_string(),
+                            rusqlite::types::ValueRef::Text(t) => String::from_utf8_lossy(t).into(),
+                            rusqlite::types::ValueRef::Blob(_) => String::new(),
+                        })
+                    })
+                    .collect()
+            })
+            .map_err(e)?
+            .collect::<Result<_, _>>()
+            .map_err(e)?;
+        Ok(Table { headers, rows })
+    }
+
+    /// Lists an entity from the latest snapshot, filtered by a case-insensitive name search.
+    pub fn list(&self, entity: Entity, search: &str) -> Result<Table, String> {
+        let (cols, table, name_col) = match entity {
+            Entity::Users => (
+                "name, login_name, default_role, disabled, created_on",
+                "users",
+                "name",
+            ),
+            Entity::Roles => ("name, owner, created_on, comment", "roles", "name"),
+            Entity::Warehouses => ("name, type, size, owner, created_on", "warehouses", "name"),
+        };
+        let sql = format!(
+            "SELECT {cols} FROM {table} WHERE snapshot_id = (SELECT MAX(id) FROM snapshots) AND {name_col} LIKE ? ESCAPE '\\' ORDER BY {name_col}"
+        );
+        let pattern = search
+            .replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_");
+        self.table(&sql, &[&format!("%{pattern}%")])
+    }
+
+    /// Latest snapshot header line, or None when nothing was synced yet.
+    pub fn latest(&self) -> Result<Option<Table>, String> {
+        let sql = format!(
+            "SELECT id, profile, account, active_role, {} AS taken_at_utc FROM snapshots ORDER BY id DESC LIMIT 1",
+            ts("created_at")
+        );
+        let t = self.table(&sql, &[])?;
+        Ok((!t.rows.is_empty()).then_some(t))
+    }
+
+    pub fn datasets(&self) -> Result<Table, String> {
+        let sql = format!(
+            "SELECT name, source, row_count, {} AS collected_at_utc, COALESCE('up to ' || latency_minutes || ' min delayed', 'current') AS freshness FROM datasets WHERE snapshot_id = (SELECT MAX(id) FROM snapshots) ORDER BY rowid",
+            ts("collected_at")
+        );
+        self.table(&sql, &[])
+    }
+}
+
+#[derive(Clone, Copy)]
+pub enum Entity {
+    Users,
+    Roles,
+    Warehouses,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::collect::{Dataset, Role, RoleEdge, User, Warehouse};
+
+    fn snapshot(roles: &[&str]) -> Snapshot {
+        Snapshot {
+            account: "ACME".into(),
+            active_role: "ANALYST".into(),
+            users: vec![User {
+                name: "JANE".into(),
+                login_name: None,
+                default_role: Some("ANALYST".into()),
+                disabled: Some("false".into()),
+                created_on: None,
+            }],
+            roles: roles
+                .iter()
+                .map(|n| Role {
+                    name: n.to_string(),
+                    owner: Some("SECURITYADMIN".into()),
+                    created_on: None,
+                    comment: None,
+                })
+                .collect(),
+            warehouses: vec![Warehouse {
+                name: "WH_A".into(),
+                owner: None,
+                kind: Some("STANDARD".into()),
+                size: Some("X-Small".into()),
+                created_on: None,
+                comment: None,
+            }],
+            role_edges: vec![RoleEdge {
+                parent: "ANALYST".into(),
+                child: "DATA_READ_ONLY".into(),
+                granted_by: None,
+                created_on: None,
+            }],
+            datasets: vec![
+                Dataset {
+                    name: "roles",
+                    source: "SHOW ROLES",
+                    latency_minutes: None,
+                    rows: roles.len(),
+                    collected_at: 1_700_000_000,
+                },
+                Dataset {
+                    name: "role_edges",
+                    source: "ACCOUNT_USAGE.GRANTS_TO_ROLES",
+                    latency_minutes: Some(120),
+                    rows: 1,
+                    collected_at: 1_700_000_000,
+                },
+            ],
+            ..Snapshot::default()
+        }
+    }
+
+    #[test]
+    fn no_snapshot_means_empty_lists_and_no_latest() {
+        let s = Store::in_memory();
+        assert!(s.latest().unwrap().is_none());
+        assert!(s.list(Entity::Roles, "").unwrap().rows.is_empty());
+    }
+
+    #[test]
+    fn saved_snapshot_is_listed_with_null_as_empty() {
+        let mut s = Store::in_memory();
+        s.save("default", &snapshot(&["ANALYST", "DATA_READ_ONLY"]))
+            .unwrap();
+        let roles = s.list(Entity::Roles, "").unwrap();
+        assert_eq!(roles.headers[0], "name");
+        assert_eq!(
+            roles.rows.iter().map(|r| r[0].as_str()).collect::<Vec<_>>(),
+            ["ANALYST", "DATA_READ_ONLY"]
+        );
+        assert_eq!(roles.rows[0][3], "");
+        assert_eq!(s.list(Entity::Users, "").unwrap().rows[0][0], "JANE");
+        assert_eq!(
+            s.list(Entity::Warehouses, "").unwrap().rows[0][2],
+            "X-Small"
+        );
+    }
+
+    #[test]
+    fn search_is_case_insensitive_substring() {
+        let mut s = Store::in_memory();
+        s.save(
+            "default",
+            &snapshot(&["ANALYST", "DATA_READ_ONLY", "SYSADMIN"]),
+        )
+        .unwrap();
+        let hits = s.list(Entity::Roles, "read").unwrap();
+        assert_eq!(hits.rows.len(), 1);
+        assert_eq!(hits.rows[0][0], "DATA_READ_ONLY");
+        assert!(s.list(Entity::Roles, "zzz").unwrap().rows.is_empty());
+    }
+
+    #[test]
+    fn lists_only_show_the_latest_snapshot() {
+        let mut s = Store::in_memory();
+        s.save("default", &snapshot(&["OLD_ROLE"])).unwrap();
+        let second = s.save("default", &snapshot(&["NEW_ROLE"])).unwrap();
+        let roles = s.list(Entity::Roles, "").unwrap();
+        assert_eq!(roles.rows.len(), 1);
+        assert_eq!(roles.rows[0][0], "NEW_ROLE");
+        assert_eq!(s.latest().unwrap().unwrap().rows[0][0], second.to_string());
+    }
+
+    #[test]
+    fn datasets_report_source_and_freshness() {
+        let mut s = Store::in_memory();
+        s.save("default", &snapshot(&["ANALYST"])).unwrap();
+        let d = s.datasets().unwrap();
+        assert_eq!(d.rows.len(), 2);
+        assert_eq!(d.rows[0][4], "current");
+        assert_eq!(d.rows[1][4], "up to 120 min delayed");
+        assert_eq!(d.rows[1][3], "2023-11-14 22:13:20");
+    }
+
+    #[test]
+    fn like_wildcards_in_search_match_literally() {
+        let mut s = Store::in_memory();
+        s.save("default", &snapshot(&["A_B", "AXB", "50%"]))
+            .unwrap();
+        let hits = s.list(Entity::Roles, "A_B").unwrap();
+        assert_eq!(hits.rows.len(), 1);
+        assert_eq!(hits.rows[0][0], "A_B");
+        assert_eq!(s.list(Entity::Roles, "%").unwrap().rows.len(), 1);
+    }
+}
