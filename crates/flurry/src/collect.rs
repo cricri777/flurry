@@ -1,4 +1,5 @@
 use crate::session::{Rows, Session};
+use crate::store::Entity;
 
 type Field = Option<String>;
 
@@ -51,7 +52,7 @@ pub struct WarehousePrivilege {
 
 /// Provenance of one collected dataset.
 pub struct Dataset {
-    pub name: &'static str,
+    pub name: String,
     pub source: &'static str,
     pub latency_minutes: Option<u32>,
     pub rows: usize,
@@ -61,6 +62,7 @@ pub struct Dataset {
 #[derive(Default)]
 pub struct Snapshot {
     pub account: String,
+    pub fingerprint: String,
     pub active_role: String,
     pub users: Vec<User>,
     pub roles: Vec<Role>,
@@ -101,13 +103,182 @@ async fn show_paged(s: &Session, object: &str) -> Result<Rows, String> {
     }
 }
 
-fn dataset(name: &'static str, source: &'static str, latency: Option<u32>, rows: usize) -> Dataset {
+fn dataset(name: &str, source: &'static str, latency: Option<u32>, rows: usize) -> Dataset {
     Dataset {
-        name,
+        name: name.into(),
         source,
         latency_minutes: latency,
         rows,
         collected_at: now(),
+    }
+}
+
+pub const IDENTITY_SQL: &str = "SELECT CURRENT_ACCOUNT() AS ACCOUNT, CURRENT_ROLE() AS ROLE, CURRENT_ORGANIZATION_NAME() AS ORG, CURRENT_ACCOUNT_NAME() AS ACCOUNT_NAME, CURRENT_REGION() AS REGION";
+
+/// Stable account identity (`ORG-ACCOUNT (REGION)`), falling back to the account locator.
+pub fn fingerprint(id: &Rows) -> String {
+    let get = |c| id.get(0, c).filter(|v| !v.is_empty());
+    let name = match (get("org"), get("account_name")) {
+        (Some(o), Some(a)) => format!("{o}-{a}"),
+        _ => get("account").unwrap_or_default(),
+    };
+    match get("region") {
+        Some(r) => format!("{name} ({r})"),
+        None => name,
+    }
+}
+
+/// Quotes a Snowflake identifier so raw input can never alter the statement.
+pub fn quote_ident(name: &str) -> String {
+    format!("\"{}\"", name.replace('"', "\"\""))
+}
+
+// Keeps the rows for which `keep` holds.
+fn keep(r: Rows, keep: impl Fn(&Rows, usize) -> bool) -> Rows {
+    let idx: Vec<usize> = (0..r.rows.len()).filter(|&i| keep(&r, i)).collect();
+    let rows = idx.iter().map(|&i| r.rows[i].clone()).collect();
+    Rows { cols: r.cols, rows }
+}
+
+// SHOW ... LIKE is a case-insensitive pattern, so the exact name is matched afterwards.
+async fn show_exact(s: &Session, object: &str, name: &str) -> Result<Rows, String> {
+    let pattern = name.replace('\\', "\\\\").replace('\'', "''");
+    let r = s.query(&format!("SHOW {object} LIKE '{pattern}'")).await?;
+    let r = keep(r, |r, i| r.get(i, "name").as_deref() == Some(name));
+    if r.rows.is_empty() {
+        return Err(format!(
+            "{name}: not found or not visible to the active role"
+        ));
+    }
+    Ok(r)
+}
+
+fn is_role_or_warehouse_grant(r: &Rows, i: usize) -> bool {
+    let on = r.get(i, "granted_on");
+    (on.as_deref() == Some("ROLE") && r.get(i, "privilege").as_deref() == Some("USAGE"))
+        || on.as_deref() == Some("WAREHOUSE")
+}
+
+/// Re-reads one entity and its grants with targeted SHOW commands; the result holds only the affected rows.
+pub async fn refresh(s: &Session, entity: Entity, name: &str) -> Result<Snapshot, String> {
+    let mut snap = Snapshot::default();
+    let q = quote_ident(name);
+    match entity {
+        Entity::Users => {
+            let r = show_exact(s, "USERS", name).await?;
+            snap.users.push(user_at(&r, 0));
+            let g = s.query(&format!("SHOW GRANTS TO USER {q}")).await?;
+            snap.user_roles = user_grants(name, &g);
+            snap.datasets.push(dataset(
+                &format!("refresh users {name}"),
+                "SHOW GRANTS TO USER",
+                None,
+                snap.user_roles.len(),
+            ));
+        }
+        Entity::Roles => {
+            let r = show_exact(s, "ROLES", name).await?;
+            snap.roles.push(role_at(&r, 0));
+            let to = s.query(&format!("SHOW GRANTS TO ROLE {q}")).await?;
+            (snap.role_edges, snap.warehouse_privileges) =
+                split_role_grants(&keep(to, is_role_or_warehouse_grant));
+            let of = s.query(&format!("SHOW GRANTS OF ROLE {q}")).await?;
+            let (users, parents) = role_holders(name, &of);
+            snap.user_roles = users;
+            snap.role_edges.extend(parents);
+            let rows =
+                snap.user_roles.len() + snap.role_edges.len() + snap.warehouse_privileges.len();
+            snap.datasets.push(dataset(
+                &format!("refresh roles {name}"),
+                "SHOW GRANTS TO/OF ROLE",
+                None,
+                rows,
+            ));
+        }
+        Entity::Warehouses => {
+            let r = show_exact(s, "WAREHOUSES", name).await?;
+            snap.warehouses.push(warehouse_at(&r, 0));
+            let g = s.query(&format!("SHOW GRANTS ON WAREHOUSE {q}")).await?;
+            let g = keep(g, |r, i| {
+                r.get(i, "granted_to").as_deref() == Some("ROLE")
+                    && r.get(i, "granted_on").as_deref() == Some("WAREHOUSE")
+            });
+            (_, snap.warehouse_privileges) = split_role_grants(&g);
+            snap.datasets.push(dataset(
+                &format!("refresh warehouses {name}"),
+                "SHOW GRANTS ON WAREHOUSE",
+                None,
+                snap.warehouse_privileges.len(),
+            ));
+        }
+    }
+    Ok(snap)
+}
+
+// SHOW GRANTS TO USER lists the roles in the `role` column.
+fn user_grants(user: &str, r: &Rows) -> Vec<UserRole> {
+    (0..r.rows.len())
+        .map(|i| UserRole {
+            user: user.into(),
+            role: r.get(i, "role").unwrap_or_default(),
+            granted_by: r.get(i, "granted_by"),
+            created_on: r.get(i, "created_on"),
+        })
+        .collect()
+}
+
+// SHOW GRANTS OF ROLE lists who holds the role: users and parent roles that inherit it.
+fn role_holders(role: &str, r: &Rows) -> (Vec<UserRole>, Vec<RoleEdge>) {
+    let (mut users, mut parents) = (Vec::new(), Vec::new());
+    for i in 0..r.rows.len() {
+        let grantee = r.get(i, "grantee_name").unwrap_or_default();
+        let (granted_by, created_on) = (r.get(i, "granted_by"), r.get(i, "created_on"));
+        match r.get(i, "granted_to").as_deref() {
+            Some("USER") => users.push(UserRole {
+                user: grantee,
+                role: role.into(),
+                granted_by,
+                created_on,
+            }),
+            Some("ROLE") => parents.push(RoleEdge {
+                parent: grantee,
+                child: role.into(),
+                granted_by,
+                created_on,
+            }),
+            _ => {}
+        }
+    }
+    (users, parents)
+}
+
+fn user_at(r: &Rows, i: usize) -> User {
+    User {
+        name: r.get(i, "name").unwrap_or_default(),
+        login_name: r.get(i, "login_name"),
+        default_role: r.get(i, "default_role"),
+        disabled: r.get(i, "disabled"),
+        created_on: r.get(i, "created_on"),
+    }
+}
+
+fn role_at(r: &Rows, i: usize) -> Role {
+    Role {
+        name: r.get(i, "name").unwrap_or_default(),
+        owner: r.get(i, "owner"),
+        created_on: r.get(i, "created_on"),
+        comment: r.get(i, "comment"),
+    }
+}
+
+fn warehouse_at(r: &Rows, i: usize) -> Warehouse {
+    Warehouse {
+        name: r.get(i, "name").unwrap_or_default(),
+        owner: r.get(i, "owner"),
+        kind: r.get(i, "type"),
+        size: r.get(i, "size"),
+        created_on: r.get(i, "created_on"),
+        comment: r.get(i, "comment"),
     }
 }
 
@@ -146,22 +317,15 @@ fn split_role_grants(r: &Rows) -> (Vec<RoleEdge>, Vec<WarehousePrivilege>) {
 pub async fn collect(s: &Session, log: impl Fn(&str)) -> Result<Snapshot, String> {
     let mut snap = Snapshot::default();
 
-    let id = s
-        .query("SELECT CURRENT_ACCOUNT() AS ACCOUNT, CURRENT_ROLE() AS ROLE")
-        .await?;
+    let id = s.query(IDENTITY_SQL).await?;
     snap.account = id.get(0, "account").unwrap_or_default();
     snap.active_role = id.get(0, "role").unwrap_or_default();
+    snap.fingerprint = fingerprint(&id);
 
     log("users");
     let r = show_paged(s, "USERS").await?;
     for i in 0..r.rows.len() {
-        snap.users.push(User {
-            name: r.get(i, "name").unwrap_or_default(),
-            login_name: r.get(i, "login_name"),
-            default_role: r.get(i, "default_role"),
-            disabled: r.get(i, "disabled"),
-            created_on: r.get(i, "created_on"),
-        });
+        snap.users.push(user_at(&r, i));
     }
     snap.datasets
         .push(dataset("users", "SHOW USERS", None, snap.users.len()));
@@ -169,12 +333,7 @@ pub async fn collect(s: &Session, log: impl Fn(&str)) -> Result<Snapshot, String
     log("roles");
     let r = show_paged(s, "ROLES").await?;
     for i in 0..r.rows.len() {
-        snap.roles.push(Role {
-            name: r.get(i, "name").unwrap_or_default(),
-            owner: r.get(i, "owner"),
-            created_on: r.get(i, "created_on"),
-            comment: r.get(i, "comment"),
-        });
+        snap.roles.push(role_at(&r, i));
     }
     snap.datasets
         .push(dataset("roles", "SHOW ROLES", None, snap.roles.len()));
@@ -182,14 +341,7 @@ pub async fn collect(s: &Session, log: impl Fn(&str)) -> Result<Snapshot, String
     log("warehouses");
     let r = s.query("SHOW WAREHOUSES").await?;
     for i in 0..r.rows.len() {
-        snap.warehouses.push(Warehouse {
-            name: r.get(i, "name").unwrap_or_default(),
-            owner: r.get(i, "owner"),
-            kind: r.get(i, "type"),
-            size: r.get(i, "size"),
-            created_on: r.get(i, "created_on"),
-            comment: r.get(i, "comment"),
-        });
+        snap.warehouses.push(warehouse_at(&r, i));
     }
     snap.datasets.push(dataset(
         "warehouses",
@@ -332,6 +484,59 @@ mod tests {
             edges.iter().map(|e| e.child.as_str()).collect::<Vec<_>>(),
             ["C1", "C2"]
         );
+        assert_eq!(privileges.len(), 1);
+    }
+
+    #[test]
+    fn fingerprint_prefers_org_account_name_and_region() {
+        let r = rows(
+            ["account", "org", "account_name", "region"],
+            &[["AB123", "ACME", "PROD", "AWS_US_EAST_1"]],
+        );
+        assert_eq!(fingerprint(&r), "ACME-PROD (AWS_US_EAST_1)");
+        let r = rows(["account"], &[["AB123"]]);
+        assert_eq!(fingerprint(&r), "AB123");
+    }
+
+    #[test]
+    fn identifiers_are_quoted_and_escaped() {
+        assert_eq!(quote_ident("ANALYST"), "\"ANALYST\"");
+        assert_eq!(quote_ident("A\"; DROP"), "\"A\"\"; DROP\"");
+    }
+
+    #[test]
+    fn role_holders_split_users_and_parent_roles() {
+        let r = rows(
+            ["granted_to", "grantee_name"],
+            &[
+                ["USER", "JANE"],
+                ["ROLE", "SYSADMIN"],
+                ["DATABASE_ROLE", "X"],
+            ],
+        );
+        let (users, parents) = role_holders("ANALYST", &r);
+        assert_eq!(users[0].user, "JANE");
+        assert_eq!(users[0].role, "ANALYST");
+        assert_eq!(parents.len(), 1);
+        assert_eq!(
+            (parents[0].parent.as_str(), parents[0].child.as_str()),
+            ("SYSADMIN", "ANALYST")
+        );
+    }
+
+    #[test]
+    fn role_grants_keep_only_role_usage_and_warehouse_rows() {
+        let r = rows(
+            ["privilege", "granted_on", "name", "grantee_name"],
+            &[
+                ["USAGE", "ROLE", "C1", "P1"],
+                ["OWNERSHIP", "ROLE", "C2", "P1"],
+                ["SELECT", "TABLE", "T1", "P1"],
+                ["USAGE", "WAREHOUSE", "W1", "P1"],
+            ],
+        );
+        let (edges, privileges) = split_role_grants(&keep(r, is_role_or_warehouse_grant));
+        assert_eq!(edges.len(), 1);
         assert_eq!(privileges.len(), 1);
     }
 }

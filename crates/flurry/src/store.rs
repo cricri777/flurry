@@ -5,7 +5,7 @@ use rusqlite::{Connection, params};
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS snapshots (
   id INTEGER PRIMARY KEY, profile TEXT NOT NULL, account TEXT NOT NULL,
-  active_role TEXT NOT NULL, created_at INTEGER NOT NULL);
+  active_role TEXT NOT NULL, created_at INTEGER NOT NULL, fingerprint TEXT);
 CREATE TABLE IF NOT EXISTS datasets (
   snapshot_id INTEGER NOT NULL, name TEXT NOT NULL, source TEXT NOT NULL,
   latency_minutes INTEGER, row_count INTEGER NOT NULL, collected_at INTEGER NOT NULL);
@@ -46,8 +46,99 @@ fn e(err: rusqlite::Error) -> String {
     err.to_string()
 }
 
+// Adds columns introduced after the first release to existing databases.
+fn migrate(conn: &Connection) -> Result<(), String> {
+    let has: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('snapshots') WHERE name = 'fingerprint'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(e)?;
+    if has == 0 {
+        conn.execute("ALTER TABLE snapshots ADD COLUMN fingerprint TEXT", [])
+            .map_err(e)?;
+    }
+    Ok(())
+}
+
 fn ts(col: &str) -> String {
     format!("datetime({col}, 'unixepoch')")
+}
+
+// Inserts every row of a snapshot under the given snapshot id.
+fn insert_rows(tx: &rusqlite::Transaction, id: i64, s: &Snapshot) -> Result<(), String> {
+    for d in &s.datasets {
+        tx.execute(
+            "INSERT INTO datasets VALUES (?, ?, ?, ?, ?, ?)",
+            params![
+                id,
+                d.name,
+                d.source,
+                d.latency_minutes,
+                d.rows as i64,
+                d.collected_at as i64
+            ],
+        )
+        .map_err(e)?;
+    }
+    for u in &s.users {
+        tx.execute(
+            "INSERT INTO users VALUES (?, ?, ?, ?, ?, ?)",
+            params![
+                id,
+                u.name,
+                u.login_name,
+                u.default_role,
+                u.disabled,
+                u.created_on
+            ],
+        )
+        .map_err(e)?;
+    }
+    for r in &s.roles {
+        tx.execute(
+            "INSERT INTO roles VALUES (?, ?, ?, ?, ?)",
+            params![id, r.name, r.owner, r.created_on, r.comment],
+        )
+        .map_err(e)?;
+    }
+    for w in &s.warehouses {
+        tx.execute(
+            "INSERT INTO warehouses VALUES (?, ?, ?, ?, ?, ?, ?)",
+            params![id, w.name, w.owner, w.kind, w.size, w.created_on, w.comment],
+        )
+        .map_err(e)?;
+    }
+    for g in &s.user_roles {
+        tx.execute(
+            "INSERT INTO user_roles VALUES (?, ?, ?, ?, ?)",
+            params![id, g.user, g.role, g.granted_by, g.created_on],
+        )
+        .map_err(e)?;
+    }
+    for g in &s.role_edges {
+        tx.execute(
+            "INSERT INTO role_edges VALUES (?, ?, ?, ?, ?)",
+            params![id, g.parent, g.child, g.granted_by, g.created_on],
+        )
+        .map_err(e)?;
+    }
+    for g in &s.warehouse_privileges {
+        tx.execute(
+            "INSERT INTO warehouse_privileges VALUES (?, ?, ?, ?, ?, ?)",
+            params![
+                id,
+                g.role,
+                g.warehouse,
+                g.privilege,
+                g.grant_option,
+                g.granted_by
+            ],
+        )
+        .map_err(e)?;
+    }
+    Ok(())
 }
 
 impl Store {
@@ -59,6 +150,7 @@ impl Store {
         config::restrict(&dir, 0o700);
         config::restrict(&path, 0o600);
         conn.execute_batch(SCHEMA).map_err(e)?;
+        migrate(&conn)?;
         Ok(Self(conn))
     }
 
@@ -73,81 +165,52 @@ impl Store {
     pub fn save(&mut self, profile: &str, s: &Snapshot) -> Result<i64, String> {
         let tx = self.0.transaction().map_err(e)?;
         tx.execute(
-            "INSERT INTO snapshots (profile, account, active_role, created_at) VALUES (?, ?, ?, strftime('%s','now'))",
-            params![profile, s.account, s.active_role],
+            "INSERT INTO snapshots (profile, account, active_role, created_at, fingerprint) VALUES (?, ?, ?, strftime('%s','now'), ?)",
+            params![profile, s.account, s.active_role, s.fingerprint],
         )
         .map_err(e)?;
         let id = tx.last_insert_rowid();
+        insert_rows(&tx, id, s)?;
+        tx.commit().map_err(e)?;
+        Ok(id)
+    }
+
+    /// Replaces one entity and its grants in the latest snapshot with freshly collected rows.
+    pub fn refresh(&mut self, entity: Entity, name: &str, s: &Snapshot) -> Result<i64, String> {
+        let tx = self.0.transaction().map_err(e)?;
+        let id: i64 = tx
+            .query_row("SELECT MAX(id) FROM snapshots", [], |r| {
+                r.get::<_, Option<i64>>(0)
+            })
+            .map_err(e)?
+            .ok_or("No snapshot yet. Run `flurry sync` first.")?;
+        let deletes: &[&str] = match entity {
+            Entity::Users => &[
+                "DELETE FROM users WHERE snapshot_id = ?1 AND name = ?2",
+                "DELETE FROM user_roles WHERE snapshot_id = ?1 AND user_name = ?2",
+            ],
+            Entity::Roles => &[
+                "DELETE FROM roles WHERE snapshot_id = ?1 AND name = ?2",
+                "DELETE FROM role_edges WHERE snapshot_id = ?1 AND (parent = ?2 OR child = ?2)",
+                "DELETE FROM user_roles WHERE snapshot_id = ?1 AND role_name = ?2",
+                "DELETE FROM warehouse_privileges WHERE snapshot_id = ?1 AND role_name = ?2",
+            ],
+            Entity::Warehouses => &[
+                "DELETE FROM warehouses WHERE snapshot_id = ?1 AND name = ?2",
+                "DELETE FROM warehouse_privileges WHERE snapshot_id = ?1 AND warehouse = ?2",
+            ],
+        };
+        for sql in deletes {
+            tx.execute(sql, params![id, name]).map_err(e)?;
+        }
         for d in &s.datasets {
             tx.execute(
-                "INSERT INTO datasets VALUES (?, ?, ?, ?, ?, ?)",
-                params![
-                    id,
-                    d.name,
-                    d.source,
-                    d.latency_minutes,
-                    d.rows as i64,
-                    d.collected_at as i64
-                ],
+                "DELETE FROM datasets WHERE snapshot_id = ? AND name = ?",
+                params![id, d.name],
             )
             .map_err(e)?;
         }
-        for u in &s.users {
-            tx.execute(
-                "INSERT INTO users VALUES (?, ?, ?, ?, ?, ?)",
-                params![
-                    id,
-                    u.name,
-                    u.login_name,
-                    u.default_role,
-                    u.disabled,
-                    u.created_on
-                ],
-            )
-            .map_err(e)?;
-        }
-        for r in &s.roles {
-            tx.execute(
-                "INSERT INTO roles VALUES (?, ?, ?, ?, ?)",
-                params![id, r.name, r.owner, r.created_on, r.comment],
-            )
-            .map_err(e)?;
-        }
-        for w in &s.warehouses {
-            tx.execute(
-                "INSERT INTO warehouses VALUES (?, ?, ?, ?, ?, ?, ?)",
-                params![id, w.name, w.owner, w.kind, w.size, w.created_on, w.comment],
-            )
-            .map_err(e)?;
-        }
-        for g in &s.user_roles {
-            tx.execute(
-                "INSERT INTO user_roles VALUES (?, ?, ?, ?, ?)",
-                params![id, g.user, g.role, g.granted_by, g.created_on],
-            )
-            .map_err(e)?;
-        }
-        for g in &s.role_edges {
-            tx.execute(
-                "INSERT INTO role_edges VALUES (?, ?, ?, ?, ?)",
-                params![id, g.parent, g.child, g.granted_by, g.created_on],
-            )
-            .map_err(e)?;
-        }
-        for g in &s.warehouse_privileges {
-            tx.execute(
-                "INSERT INTO warehouse_privileges VALUES (?, ?, ?, ?, ?, ?)",
-                params![
-                    id,
-                    g.role,
-                    g.warehouse,
-                    g.privilege,
-                    g.grant_option,
-                    g.granted_by
-                ],
-            )
-            .map_err(e)?;
-        }
+        insert_rows(&tx, id, s)?;
         tx.commit().map_err(e)?;
         Ok(id)
     }
@@ -200,7 +263,7 @@ impl Store {
     /// Latest snapshot header line, or None when nothing was synced yet.
     pub fn latest(&self) -> Result<Option<Table>, String> {
         let sql = format!(
-            "SELECT id, profile, account, active_role, {} AS taken_at_utc FROM snapshots ORDER BY id DESC LIMIT 1",
+            "SELECT id, profile, account, active_role, {} AS taken_at_utc, COALESCE(fingerprint, '') AS fingerprint FROM snapshots ORDER BY id DESC LIMIT 1",
             ts("created_at")
         );
         let t = self.table(&sql, &[])?;
@@ -264,14 +327,14 @@ mod tests {
             }],
             datasets: vec![
                 Dataset {
-                    name: "roles",
+                    name: "roles".into(),
                     source: "SHOW ROLES",
                     latency_minutes: None,
                     rows: roles.len(),
                     collected_at: 1_700_000_000,
                 },
                 Dataset {
-                    name: "role_edges",
+                    name: "role_edges".into(),
                     source: "ACCOUNT_USAGE.GRANTS_TO_ROLES",
                     latency_minutes: Some(120),
                     rows: 1,
@@ -353,5 +416,45 @@ mod tests {
         assert_eq!(hits.rows.len(), 1);
         assert_eq!(hits.rows[0][0], "A_B");
         assert_eq!(s.list(Entity::Roles, "%").unwrap().rows.len(), 1);
+    }
+
+    #[test]
+    fn refresh_replaces_one_role_and_its_grants_only() {
+        let mut s = Store::in_memory();
+        s.save("default", &snapshot(&["ANALYST", "OTHER"])).unwrap();
+        let fresh = Snapshot {
+            roles: vec![Role {
+                name: "ANALYST".into(),
+                owner: Some("NEW_OWNER".into()),
+                created_on: None,
+                comment: None,
+            }],
+            datasets: vec![Dataset {
+                name: "refresh roles ANALYST".into(),
+                source: "SHOW GRANTS TO/OF ROLE",
+                latency_minutes: None,
+                rows: 0,
+                collected_at: 1_700_000_000,
+            }],
+            ..Snapshot::default()
+        };
+        s.refresh(Entity::Roles, "ANALYST", &fresh).unwrap();
+        let roles = s.list(Entity::Roles, "").unwrap();
+        assert_eq!(roles.rows.len(), 2);
+        assert_eq!(roles.rows[0][1], "NEW_OWNER");
+        let edges: i64 =
+            s.0.query_row("SELECT COUNT(*) FROM role_edges", [], |r| r.get(0))
+                .unwrap();
+        assert_eq!(edges, 0);
+        assert_eq!(s.datasets().unwrap().rows.len(), 3);
+    }
+
+    #[test]
+    fn refresh_without_snapshot_fails() {
+        let mut s = Store::in_memory();
+        assert!(
+            s.refresh(Entity::Users, "JANE", &Snapshot::default())
+                .is_err()
+        );
     }
 }

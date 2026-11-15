@@ -16,7 +16,7 @@ db.execute("DELETE FROM snapshots")
 for t in ("datasets", "users", "roles", "warehouses", "user_roles", "role_edges", "warehouse_privileges"):
     db.execute(f"DELETE FROM {t}")
 
-db.execute("INSERT INTO snapshots VALUES (1, 'default', 'ACME-TEST', 'ACCOUNTADMIN', strftime('%s','now'))")
+db.execute("INSERT INTO snapshots (id, profile, account, active_role, created_at, fingerprint) VALUES (1, 'default', 'AB123', 'ACCOUNTADMIN', strftime('%s','now'), 'ACME-TEST (AWS_US_EAST_1)')")
 now = "strftime('%s','now')"
 for name, src, latency, n in [
     ("users", "SHOW USERS", None, 2),

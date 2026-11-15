@@ -30,6 +30,15 @@ struct Cli {
 enum Cmd {
     /// Collect a metadata snapshot from Snowflake into the local database.
     Sync(Profile),
+    /// Re-read one user, role or warehouse and its grants into the latest snapshot.
+    Refresh {
+        #[arg(value_enum)]
+        kind: Kind,
+        /// Exact name of the entity.
+        name: String,
+        #[command(flatten)]
+        profile: Profile,
+    },
     /// Show the latest snapshot and the freshness of each dataset.
     Status,
     /// Check the Snowflake connection.
@@ -79,6 +88,13 @@ struct ListArgs {
     search: String,
     #[arg(short, long, value_enum, default_value = "table")]
     format: Format,
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Kind {
+    User,
+    Role,
+    Warehouse,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -148,10 +164,29 @@ async fn sync(p: &Profile) -> Result<(), String> {
     let id = Store::open()?.save(p.profile.as_deref().unwrap_or("default"), &snap)?;
     println!(
         "Snapshot {id} saved (account {}, role {})",
-        snap.account, snap.active_role
+        snap.fingerprint, snap.active_role
     );
     for d in &snap.datasets {
         println!("  {:<22} {}", d.name, d.rows);
+    }
+    Ok(())
+}
+
+async fn refresh(kind: Kind, name: &str, p: &Profile) -> Result<(), String> {
+    let entity = match kind {
+        Kind::User => Entity::Users,
+        Kind::Role => Entity::Roles,
+        Kind::Warehouse => Entity::Warehouses,
+    };
+    let mut store = Store::open()?;
+    if store.latest()?.is_none() {
+        return Err("No snapshot yet. Run `flurry sync` first.".into());
+    }
+    let snap = collect::refresh(&connect(p).await?, entity, name).await?;
+    let id = store.refresh(entity, name, &snap)?;
+    println!("Refreshed {name} in snapshot {id}");
+    for d in &snap.datasets {
+        println!("  {:<30} {}", d.name, d.rows);
     }
     Ok(())
 }
@@ -164,20 +199,26 @@ fn status() -> Result<(), String> {
     };
     let r = &latest.rows[0];
     println!(
-        "Snapshot {} of profile '{}' (account {}, role {}) taken {} UTC\n",
+        "Snapshot {} of profile '{}' (account {}, role {}) taken {} UTC",
         r[0], r[1], r[2], r[3], r[4]
     );
+    if !r[5].is_empty() {
+        println!("Account {}", r[5]);
+    }
+    println!();
     print_table(&store.datasets()?, Format::Table);
     Ok(())
 }
 
 async fn connection_test(p: &Profile) -> Result<(), String> {
-    let r = connect(p)
-        .await?
-        .query("SELECT CURRENT_ACCOUNT() AS ACCOUNT, CURRENT_USER() AS USER, CURRENT_ROLE() AS ROLE, CURRENT_WAREHOUSE() AS WAREHOUSE")
+    let session = connect(p).await?;
+    let id = session.query(collect::IDENTITY_SQL).await?;
+    println!("{:<12} {}", "fingerprint", collect::fingerprint(&id));
+    let r = session
+        .query("SELECT CURRENT_USER() AS USER, CURRENT_ROLE() AS ROLE, CURRENT_WAREHOUSE() AS WAREHOUSE")
         .await?;
     for c in &r.cols {
-        println!("{c:<10} {}", r.get(0, c).unwrap_or_default());
+        println!("{c:<12} {}", r.get(0, c).unwrap_or_default());
     }
     Ok(())
 }
@@ -249,6 +290,11 @@ async fn main() {
     let result = match Cli::parse().cmd {
         None => tui(),
         Some(Cmd::Sync(p)) => sync(&p).await,
+        Some(Cmd::Refresh {
+            kind,
+            name,
+            profile,
+        }) => refresh(kind, &name, &profile).await,
         Some(Cmd::Status) => status(),
         Some(Cmd::Connection {
             action: ConnectionCmd::Test(p),
