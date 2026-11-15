@@ -10,6 +10,7 @@ use crossterm::{
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use flurry_graph::Access;
 use modes::{Key, Mode, State, handle_key};
 use serde_json::{Value, json};
 use session::Session;
@@ -45,6 +46,15 @@ enum Cmd {
     Connection {
         #[command(subcommand)]
         action: ConnectionCmd,
+    },
+    /// Explain, offline, how a user reaches a privilege on a warehouse.
+    Access {
+        user: String,
+        warehouse: String,
+        #[arg(short, long, default_value = "USAGE")]
+        privilege: String,
+        #[arg(short, long, value_enum, default_value = "table")]
+        format: Format,
     },
     /// Local users from the latest snapshot.
     Users {
@@ -231,6 +241,64 @@ async fn connection_test(p: &Profile) -> Result<(), String> {
     Ok(())
 }
 
+fn access(user: &str, warehouse: &str, privilege: &str, format: Format) -> Result<(), String> {
+    let store = Store::open()?;
+    for (entity, name, label) in [
+        (Entity::Users, user, "user"),
+        (Entity::Warehouses, warehouse, "warehouse"),
+    ] {
+        if !store.has(entity, name)? {
+            return Err(format!("{label} '{name}' is not in the latest snapshot"));
+        }
+    }
+    let result = store.graph()?.access(user, warehouse, privilege);
+    let (verdict, paths, note) = match &result {
+        Access::Granted { paths, truncated } => (
+            "ACCESS",
+            paths.as_slice(),
+            truncated.then_some("more paths exist".to_string()),
+        ),
+        Access::NoKnownAccess => ("NO ACCESS", [].as_slice(), None),
+        Access::Unknown { missing } => (
+            "UNKNOWN / INCOMPLETE",
+            [].as_slice(),
+            Some(format!("not collected: {}", missing.join(", "))),
+        ),
+    };
+    let chain = |p: &flurry_graph::AccessPath| {
+        let roles = p.roles.join(" -> ");
+        if p.implicit {
+            format!("{roles} (implicit)")
+        } else {
+            roles
+        }
+    };
+    match format {
+        Format::Json => println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "user": user, "warehouse": warehouse, "privilege": privilege.to_uppercase(),
+                "result": verdict, "note": note,
+                "paths": paths.iter().map(chain).collect::<Vec<_>>(),
+            }))
+            .unwrap_or_default()
+        ),
+        Format::Table => {
+            println!(
+                "{verdict}: {user} {} on {warehouse}",
+                privilege.to_uppercase()
+            );
+            if let Some(n) = note {
+                println!("  {n}");
+            }
+            for p in paths {
+                println!("  {user} -> {}", chain(p));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn list(entity: Entity, a: &ListArgs) -> Result<(), String> {
     print_table(&Store::open()?.list(entity, &a.search)?, a.format);
     Ok(())
@@ -307,6 +375,12 @@ async fn main() {
         Some(Cmd::Connection {
             action: ConnectionCmd::Test(p),
         }) => connection_test(&p).await,
+        Some(Cmd::Access {
+            user,
+            warehouse,
+            privilege,
+            format,
+        }) => access(&user, &warehouse, &privilege, format),
         Some(Cmd::Users {
             action: ListCmd::List(a),
         }) => list(Entity::Users, &a),
