@@ -31,12 +31,16 @@ struct Cli {
 enum Cmd {
     /// Collect a metadata snapshot from Snowflake into the local database.
     Sync(Profile),
-    /// Re-read one user, role or warehouse and its grants into the latest snapshot.
+    /// Re-read one user, role or warehouse (or all of them with --all) into the latest snapshot.
     Refresh {
-        #[arg(value_enum)]
-        kind: Kind,
+        #[arg(value_enum, requires = "name")]
+        kind: Option<Kind>,
         /// Exact name of the entity.
-        name: String,
+        #[arg(requires = "kind")]
+        name: Option<String>,
+        /// Refresh every user, role and warehouse of the latest snapshot.
+        #[arg(long, conflicts_with = "kind", required_unless_present = "kind")]
+        all: bool,
         #[command(flatten)]
         profile: Profile,
     },
@@ -190,23 +194,85 @@ async fn sync(p: &Profile) -> Result<(), String> {
     Ok(())
 }
 
-async fn refresh(kind: Kind, name: &str, p: &Profile) -> Result<(), String> {
-    let entity = match kind {
-        Kind::User => Entity::Users,
-        Kind::Role => Entity::Roles,
-        Kind::Warehouse => Entity::Warehouses,
-    };
+async fn refresh(kind: Option<Kind>, name: Option<String>, p: &Profile) -> Result<(), String> {
     let mut store = Store::open()?;
     if store.latest()?.is_none() {
         return Err("No snapshot yet. Run `flurry sync` first.".into());
     }
-    let snap = collect::refresh(&connect(p).await?, entity, name).await?;
-    let id = store.refresh(entity, name, &snap)?;
-    println!("Refreshed {name} in snapshot {id}");
-    for d in &snap.datasets {
-        println!("  {:<30} {}", d.name, d.rows);
+    let all = kind.is_none();
+    let targets: Vec<(Entity, String)> = match (kind, name) {
+        (Some(k), Some(n)) => vec![(entity_of(k), n)],
+        _ => {
+            let mut all = Vec::new();
+            for entity in [Entity::Users, Entity::Roles, Entity::Warehouses] {
+                for row in store.list(entity, "")?.rows {
+                    all.push((entity, row.into_iter().next().unwrap_or_default()));
+                }
+            }
+            all
+        }
+    };
+    let session = connect(p).await?;
+    let (mut totals, mut skipped): (Vec<collect::Dataset>, usize) = (Vec::new(), 0);
+    for (entity, name) in &targets {
+        let mut snap = match collect::refresh(&session, *entity, name).await {
+            Ok(s) => s,
+            Err(e) if all && e.ends_with(collect::NOT_FOUND) => {
+                eprintln!("Skipped {e}");
+                skipped += 1;
+                continue;
+            }
+            Err(e) => return Err(e),
+        };
+        if all {
+            // One dataset row per kind instead of one per entity, so `status` stays short.
+            let total = format!("refresh all {}", label_of(*entity));
+            for d in snap.datasets.drain(..) {
+                match totals.iter_mut().find(|t| t.name == total) {
+                    Some(t) => {
+                        t.rows += d.rows;
+                        t.collected_at = d.collected_at;
+                    }
+                    None => totals.push(collect::Dataset {
+                        name: total.clone(),
+                        ..d
+                    }),
+                }
+            }
+        }
+        let id = store.refresh(*entity, name, &snap)?;
+        println!("Refreshed {name} in snapshot {id}");
+        for d in &snap.datasets {
+            println!("  {:<30} {}", d.name, d.rows);
+        }
+    }
+    for t in totals {
+        println!("  {:<30} {}", t.name, t.rows);
+        store.record(t)?;
+    }
+    if skipped > 0 {
+        return Err(format!(
+            "{skipped} of {} entities were skipped; run `flurry sync` to drop them",
+            targets.len()
+        ));
     }
     Ok(())
+}
+
+fn label_of(entity: Entity) -> &'static str {
+    match entity {
+        Entity::Users => "users",
+        Entity::Roles => "roles",
+        Entity::Warehouses => "warehouses",
+    }
+}
+
+fn entity_of(kind: Kind) -> Entity {
+    match kind {
+        Kind::User => Entity::Users,
+        Kind::Role => Entity::Roles,
+        Kind::Warehouse => Entity::Warehouses,
+    }
 }
 
 fn status() -> Result<(), String> {
@@ -382,7 +448,8 @@ async fn main() {
             kind,
             name,
             profile,
-        }) => refresh(kind, &name, &profile).await,
+            ..
+        }) => refresh(kind, name, &profile).await,
         Some(Cmd::Status) => status(),
         Some(Cmd::Connection {
             action: ConnectionCmd::Test(p),
