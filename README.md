@@ -5,6 +5,8 @@
 > [!WARNING]
 > Work in progress and unstable: only a feasibility spike exists, and everything may change without notice. The implementation is Rust; the Bun/OpenTUI sections below are the original plan.
 
+New here? Follow [Getting started](docs/getting-started.md).
+
 Flurry is an interactive terminal application for exploring Snowflake users, account roles, virtual warehouses, grants, and role inheritance. It is designed for Snowflake platform engineers and administrators working in large accounts where the native UI makes relationship discovery and repeated lookups cumbersome.
 
 Flurry synchronizes account metadata into a local SQLite database and builds an in-memory relationship graph. After the initial synchronization, users can search and navigate the local snapshot without issuing a Snowflake query for every interaction. The application must always show when data was collected, where it came from, and whether the collection may be incomplete or stale.
