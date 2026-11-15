@@ -90,30 +90,40 @@ impl Graph {
     /// Why `user` can or cannot hold `privilege` on `warehouse`.
     pub fn access(&self, user: &str, warehouse: &str, privilege: &str) -> Access {
         let privilege = privilege.to_uppercase();
+        let holders: BTreeSet<&str> = self
+            .privileges
+            .iter()
+            .filter(|((_, wh), p)| wh == warehouse && p.contains(&privilege))
+            .map(|((role, _), _)| role.as_str())
+            .collect();
+        // Roles that reach a holder; pruning to them keeps a miss linear instead of exploring every path.
+        let mut useful: BTreeSet<String> = holders.iter().map(|r| r.to_string()).collect();
+        for h in &holders {
+            useful.extend(reach(&self.parents, h));
+        }
         let assigned = self.user_roles.get(user).cloned().unwrap_or_default();
         let mut starts: Vec<(bool, &str)> = assigned.iter().map(|r| (false, r.as_str())).collect();
         if !assigned.contains(PUBLIC) {
             starts.push((true, PUBLIC));
         }
-        let mut paths = Vec::new();
-        let mut truncated = false;
+        let mut walk = Walk {
+            graph: self,
+            holders: &holders,
+            useful: &useful,
+            implicit: false,
+            chain: Vec::new(),
+            found: Vec::new(),
+        };
         for (implicit, start) in starts {
-            let mut walk = Walk {
-                graph: self,
-                warehouse,
-                privilege: &privilege,
-                chain: vec![start],
-                found: Vec::new(),
-            };
-            walk.visit(start);
-            for roles in walk.found {
-                if paths.len() == MAX_PATHS {
-                    truncated = true;
-                    break;
-                }
-                paths.push(AccessPath { implicit, roles });
+            if useful.contains(start) {
+                walk.implicit = implicit;
+                walk.chain = vec![start];
+                walk.visit(start);
             }
         }
+        let mut paths = walk.found;
+        let truncated = paths.len() > MAX_PATHS;
+        paths.truncate(MAX_PATHS);
         paths.sort();
         if !paths.is_empty() {
             return Access::Granted { paths, truncated };
@@ -147,27 +157,28 @@ fn reach(edges: &Names, start: &str) -> Vec<String> {
 
 struct Walk<'a> {
     graph: &'a Graph,
-    warehouse: &'a str,
-    privilege: &'a str,
+    holders: &'a BTreeSet<&'a str>,
+    useful: &'a BTreeSet<String>,
+    implicit: bool,
     chain: Vec<&'a str>,
-    found: Vec<Vec<String>>,
+    found: Vec<AccessPath>,
 }
 
 impl<'a> Walk<'a> {
-    // Depth-first over inherited roles; a branch stops at the first role holding the privilege.
+    // Depth-first over inherited roles that reach a holder; a branch stops at the first holder, the walk after MAX_PATHS + 1 paths.
     fn visit(&mut self, role: &'a str) {
-        let held = self
-            .graph
-            .privileges
-            .get(&(role.to_string(), self.warehouse.to_string()))
-            .is_some_and(|p| p.contains(self.privilege));
-        if held {
-            self.found
-                .push(self.chain.iter().map(|r| r.to_string()).collect());
+        if self.found.len() > MAX_PATHS {
+            return;
+        }
+        if self.holders.contains(role) {
+            self.found.push(AccessPath {
+                implicit: self.implicit,
+                roles: self.chain.iter().map(|r| r.to_string()).collect(),
+            });
             return;
         }
         for child in self.graph.children.get(role).into_iter().flatten() {
-            if !self.chain.contains(&child.as_str()) && self.found.len() <= MAX_PATHS {
+            if self.useful.contains(child) && !self.chain.contains(&child.as_str()) {
                 self.chain.push(child);
                 self.visit(child);
                 self.chain.pop();
@@ -306,6 +317,37 @@ mod tests {
             g.access("ALICE", "WH", "USAGE"),
             Access::Granted { .. }
         ));
+    }
+
+    // 2^24 simple paths: an exhaustive walk would not finish.
+    fn layered(g: &mut Graph) {
+        g.add_user_role("ALICE", "L0_0");
+        for l in 0..24 {
+            for a in 0..2 {
+                for b in 0..2 {
+                    g.add_role_edge(&format!("L{l}_{a}"), &format!("L{}_{b}", l + 1));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn dense_hierarchy_without_access_is_fast() {
+        let mut g = Graph::default();
+        layered(&mut g);
+        assert_eq!(g.access("ALICE", "WH", "USAGE"), Access::NoKnownAccess);
+    }
+
+    #[test]
+    fn dense_hierarchy_with_access_stops_at_the_cap() {
+        let mut g = Graph::default();
+        layered(&mut g);
+        g.add_warehouse_privilege("L24_0", "WH", "USAGE");
+        let Access::Granted { paths, truncated } = g.access("ALICE", "WH", "USAGE") else {
+            panic!("expected access");
+        };
+        assert_eq!(paths.len(), MAX_PATHS);
+        assert!(truncated);
     }
 
     #[test]

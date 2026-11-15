@@ -241,7 +241,16 @@ async fn connection_test(p: &Profile) -> Result<(), String> {
     Ok(())
 }
 
+/// Resolves a typed name like Snowflake does: `"Name"` is taken as is, an unquoted name is upper-cased.
+fn ident(name: &str) -> String {
+    match name.strip_prefix('"').and_then(|n| n.strip_suffix('"')) {
+        Some(quoted) => quoted.replace("\"\"", "\""),
+        None => name.to_uppercase(),
+    }
+}
+
 fn access(user: &str, warehouse: &str, privilege: &str, format: Format) -> Result<(), String> {
+    let (user, warehouse) = (&ident(user), &ident(warehouse));
     let store = Store::open()?;
     for (entity, name, label) in [
         (Entity::Users, user, "user"),
@@ -279,7 +288,10 @@ fn access(user: &str, warehouse: &str, privilege: &str, format: Format) -> Resul
             serde_json::to_string_pretty(&json!({
                 "user": user, "warehouse": warehouse, "privilege": privilege.to_uppercase(),
                 "result": verdict, "note": note,
-                "paths": paths.iter().map(chain).collect::<Vec<_>>(),
+                "paths": paths
+                    .iter()
+                    .map(|p| json!({"implicit": p.implicit, "roles": p.roles}))
+                    .collect::<Vec<_>>(),
             }))
             .unwrap_or_default()
         ),
@@ -394,5 +406,16 @@ async fn main() {
     if let Err(e) = result {
         eprintln!("Error: {e}");
         std::process::exit(1);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ident;
+
+    #[test]
+    fn ident_upper_cases_unquoted_names_only() {
+        assert_eq!(ident("jane"), "JANE");
+        assert_eq!(ident("\"Mixed\"\"Case\""), "Mixed\"Case");
     }
 }
