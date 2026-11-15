@@ -5,9 +5,7 @@ description: Process for adding a feature to the flurry repo: work in its own gi
 
 # Adding a feature to Flurry
 
-Follow every step in order; the task is not done until the PR is open and its URL is reported. Do not stop after the code or the verification, and do not edit files on `main` or leave changes uncommitted (this applies to skill and docs changes too).
-
-Follow this order. The rules live in [CONTRIBUTING.md](../../../CONTRIBUTING.md) and [AGENTS.md](../../../AGENTS.md); read them, do not restate them in the PR.
+Follow every step in order; the task is not done until the PR is open and its URL is reported. Do not stop after the code or the verification, and do not edit files on `main` or leave changes uncommitted (this applies to skill and docs changes too). The rules live in [CONTRIBUTING.md](../../../CONTRIBUTING.md) and [AGENTS.md](../../../AGENTS.md); read them, do not restate them in the PR.
 
 ## 1. Scope it
 
@@ -51,8 +49,8 @@ If `cargo fmt --all --check` fails, run `cargo fmt --all` and check again.
 
 Tests passing is not verification; run the feature itself. Follow `flurry-verification` from the worktree root:
 
-1. Build in the worktree (`cargo build -p flurry`) and confirm `target/debug/flurry` is that build, not a stale one.
-2. Export a throwaway `XDG_DATA_HOME` and `XDG_CACHE_HOME` under `/tmp`, then run `seed.py`. If it fails on the schema, update `seed.py` as part of the feature.
+1. Run `cargo build -p flurry` from the worktree root and use that worktree's `target/debug/flurry`; its modification time must be just after the build.
+2. Export a throwaway `XDG_DATA_HOME`, `XDG_CACHE_HOME` and an empty `SNOWFLAKE_HOME` under `/tmp` (so no command can reach the user's account), then run `seed.py`. If it fails on the schema, update `seed.py` as part of the feature.
 3. Exercise every changed CLI command and check its output against the expected behavior.
 4. For any TUI change, drive the TUI with `tui.py` using the exact keys or `:` commands the feature adds, and check the final screen. Cover the normal and the error or empty case.
 5. If the feature touches Snowflake connectivity or sync, also run `flurry-live-verification`; the user runs the live `sync` or `connection test` command, you do not handle their credentials.
