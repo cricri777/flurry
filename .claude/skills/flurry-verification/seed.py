@@ -26,7 +26,7 @@ for name, src, latency, n in [
     ("role_edges", "ACCOUNT_USAGE.GRANTS_TO_ROLES", 120, 3),
     ("warehouse_privileges", "ACCOUNT_USAGE.GRANTS_TO_ROLES", 120, 3),
 ]:
-    db.execute(f"INSERT INTO datasets VALUES (1, ?, ?, ?, ?, {now})", (name, src, latency, n))
+    db.execute(f"INSERT INTO datasets (snapshot_id, name, source, latency_minutes, row_count, collected_at) VALUES (1, ?, ?, ?, ?, {now})", (name, src, latency, n))
 
 db.executemany("INSERT INTO users VALUES (1, ?, ?, ?, ?, ?)", [
     ("JANE", "jane", "ANALYST", "false", "2024-01-01"),

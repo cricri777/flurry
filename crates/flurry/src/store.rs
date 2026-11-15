@@ -8,7 +8,7 @@ CREATE TABLE IF NOT EXISTS snapshots (
   active_role TEXT NOT NULL, created_at INTEGER NOT NULL, fingerprint TEXT);
 CREATE TABLE IF NOT EXISTS datasets (
   snapshot_id INTEGER NOT NULL, name TEXT NOT NULL, source TEXT NOT NULL,
-  latency_minutes INTEGER, row_count INTEGER NOT NULL, collected_at INTEGER NOT NULL);
+  latency_minutes INTEGER, row_count INTEGER NOT NULL, collected_at INTEGER NOT NULL, error TEXT);
 CREATE TABLE IF NOT EXISTS users (
   snapshot_id INTEGER NOT NULL, name TEXT NOT NULL, login_name TEXT,
   default_role TEXT, disabled TEXT, created_on TEXT);
@@ -59,6 +59,17 @@ fn migrate(conn: &Connection) -> Result<(), String> {
         conn.execute("ALTER TABLE snapshots ADD COLUMN fingerprint TEXT", [])
             .map_err(e)?;
     }
+    let has: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('datasets') WHERE name = 'error'",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(e)?;
+    if has == 0 {
+        conn.execute("ALTER TABLE datasets ADD COLUMN error TEXT", [])
+            .map_err(e)?;
+    }
     Ok(())
 }
 
@@ -70,14 +81,15 @@ fn ts(col: &str) -> String {
 fn insert_rows(tx: &rusqlite::Transaction, id: i64, s: &Snapshot) -> Result<(), String> {
     for d in &s.datasets {
         tx.execute(
-            "INSERT INTO datasets VALUES (?, ?, ?, ?, ?, ?)",
+            "INSERT INTO datasets (snapshot_id, name, source, latency_minutes, row_count, collected_at, error) VALUES (?, ?, ?, ?, ?, ?, ?)",
             params![
                 id,
                 d.name,
                 d.source,
                 d.latency_minutes,
                 d.rows as i64,
-                d.collected_at as i64
+                d.collected_at as i64,
+                d.error
             ],
         )
         .map_err(e)?;
@@ -272,7 +284,7 @@ impl Store {
 
     pub fn datasets(&self) -> Result<Table, String> {
         let sql = format!(
-            "SELECT name, source, row_count, {} AS collected_at_utc, COALESCE('up to ' || latency_minutes || ' min delayed', 'current') AS freshness FROM datasets WHERE snapshot_id = (SELECT MAX(id) FROM snapshots) ORDER BY rowid",
+            "SELECT name, source, row_count, {} AS collected_at_utc, COALESCE('up to ' || latency_minutes || ' min delayed', 'current') AS freshness, COALESCE('FAILED: ' || error, 'ok') AS status FROM datasets WHERE snapshot_id = (SELECT MAX(id) FROM snapshots) ORDER BY rowid",
             ts("collected_at")
         );
         self.table(&sql, &[])
@@ -332,6 +344,7 @@ mod tests {
                     latency_minutes: None,
                     rows: roles.len(),
                     collected_at: 1_700_000_000,
+                    error: None,
                 },
                 Dataset {
                     name: "role_edges".into(),
@@ -339,6 +352,7 @@ mod tests {
                     latency_minutes: Some(120),
                     rows: 1,
                     collected_at: 1_700_000_000,
+                    error: None,
                 },
             ],
             ..Snapshot::default()
@@ -408,6 +422,31 @@ mod tests {
     }
 
     #[test]
+    fn failed_dataset_is_reported_with_its_error() {
+        let mut s = Store::in_memory();
+        let mut snap = snapshot(&["ANALYST"]);
+        snap.datasets[1].error = Some("no access".into());
+        s.save("default", &snap).unwrap();
+        let d = s.datasets().unwrap();
+        assert_eq!(d.rows[0][5], "ok");
+        assert_eq!(d.rows[1][5], "FAILED: no access");
+    }
+
+    #[test]
+    fn migration_adds_error_column_to_old_databases() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE snapshots (id INTEGER PRIMARY KEY, fingerprint TEXT);
+             CREATE TABLE datasets (snapshot_id INTEGER, name TEXT);",
+        )
+        .unwrap();
+        migrate(&conn).unwrap();
+        migrate(&conn).unwrap();
+        conn.execute("UPDATE datasets SET error = NULL", [])
+            .unwrap();
+    }
+
+    #[test]
     fn like_wildcards_in_search_match_literally() {
         let mut s = Store::in_memory();
         s.save("default", &snapshot(&["A_B", "AXB", "50%"]))
@@ -435,6 +474,7 @@ mod tests {
                 latency_minutes: None,
                 rows: 0,
                 collected_at: 1_700_000_000,
+                error: None,
             }],
             ..Snapshot::default()
         };

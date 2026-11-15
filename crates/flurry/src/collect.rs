@@ -57,6 +57,8 @@ pub struct Dataset {
     pub latency_minutes: Option<u32>,
     pub rows: usize,
     pub collected_at: u64,
+    /// Set when the dataset could not be collected; its rows are then unknown, not empty.
+    pub error: Option<String>,
 }
 
 #[derive(Default)]
@@ -110,6 +112,14 @@ fn dataset(name: &str, source: &'static str, latency: Option<u32>, rows: usize) 
         latency_minutes: latency,
         rows,
         collected_at: now(),
+        error: None,
+    }
+}
+
+fn failed(name: &str, source: &'static str, latency: Option<u32>, error: &str) -> Dataset {
+    Dataset {
+        error: Some(error.into()),
+        ..dataset(name, source, latency, 0)
     }
 }
 
@@ -282,8 +292,17 @@ fn warehouse_at(r: &Rows, i: usize) -> Warehouse {
     }
 }
 
-fn usage_error(dataset: &str, e: String) -> String {
-    format!("{dataset}: {e} (the active role needs access to SNOWFLAKE.ACCOUNT_USAGE)")
+/// Ok with the message when access was denied, so the dataset is recorded as failed; Err for any other error, which aborts.
+fn access_denied(e: String) -> Result<String, String> {
+    let lower = e.to_lowercase();
+    let msg = format!("{e} (the active role needs access to SNOWFLAKE.ACCOUNT_USAGE)");
+    if lower.contains("does not exist or not authorized")
+        || lower.contains("insufficient privileges")
+    {
+        Ok(msg)
+    } else {
+        Err(msg)
+    }
 }
 
 /// Splits GRANTS_TO_ROLES rows into role inheritance edges and warehouse privileges.
@@ -313,7 +332,7 @@ fn split_role_grants(r: &Rows) -> (Vec<RoleEdge>, Vec<WarehousePrivilege>) {
     (edges, privileges)
 }
 
-/// Collects a full metadata snapshot; any failing dataset aborts the whole collection.
+/// Collects a full metadata snapshot; access denied on an ACCOUNT_USAGE grant dataset records it as failed, any other error aborts.
 pub async fn collect(s: &Session, log: impl Fn(&str)) -> Result<Snapshot, String> {
     let mut snap = Snapshot::default();
 
@@ -351,50 +370,87 @@ pub async fn collect(s: &Session, log: impl Fn(&str)) -> Result<Snapshot, String
     ));
 
     log("user-role grants");
-    let r = s
+    let src = "ACCOUNT_USAGE.GRANTS_TO_USERS";
+    match s
         .query("SELECT TO_VARCHAR(CREATED_ON) AS CREATED_ON, ROLE, GRANTEE_NAME, GRANTED_BY FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_USERS WHERE DELETED_ON IS NULL")
         .await
-        .map_err(|e| usage_error("user_roles", e))?;
-    for i in 0..r.rows.len() {
-        snap.user_roles.push(UserRole {
-            user: r.get(i, "grantee_name").unwrap_or_default(),
-            role: r.get(i, "role").unwrap_or_default(),
-            granted_by: r.get(i, "granted_by"),
-            created_on: r.get(i, "created_on"),
-        });
+    {
+        Ok(r) => {
+            for i in 0..r.rows.len() {
+                snap.user_roles.push(UserRole {
+                    user: r.get(i, "grantee_name").unwrap_or_default(),
+                    role: r.get(i, "role").unwrap_or_default(),
+                    granted_by: r.get(i, "granted_by"),
+                    created_on: r.get(i, "created_on"),
+                });
+            }
+            snap.datasets.push(dataset(
+                "user_roles",
+                src,
+                Some(USAGE_LATENCY),
+                snap.user_roles.len(),
+            ));
+        }
+        Err(e) => snap.datasets.push(failed(
+            "user_roles",
+            src,
+            Some(USAGE_LATENCY),
+            &access_denied(e)?,
+        )),
     }
-    snap.datasets.push(dataset(
-        "user_roles",
-        "ACCOUNT_USAGE.GRANTS_TO_USERS",
-        Some(USAGE_LATENCY),
-        snap.user_roles.len(),
-    ));
 
     log("role grants");
-    let r = s
+    let src = "ACCOUNT_USAGE.GRANTS_TO_ROLES";
+    match s
         .query("SELECT TO_VARCHAR(CREATED_ON) AS CREATED_ON, PRIVILEGE, GRANTED_ON, NAME, GRANTEE_NAME, GRANT_OPTION, GRANTED_BY FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_ROLES WHERE DELETED_ON IS NULL AND GRANTED_TO = 'ROLE' AND ((GRANTED_ON = 'ROLE' AND PRIVILEGE = 'USAGE') OR GRANTED_ON = 'WAREHOUSE')")
         .await
-        .map_err(|e| usage_error("role_edges", e))?;
-    (snap.role_edges, snap.warehouse_privileges) = split_role_grants(&r);
-    let src = "ACCOUNT_USAGE.GRANTS_TO_ROLES";
-    snap.datasets.push(dataset(
-        "role_edges",
-        src,
-        Some(USAGE_LATENCY),
-        snap.role_edges.len(),
-    ));
-    snap.datasets.push(dataset(
-        "warehouse_privileges",
-        src,
-        Some(USAGE_LATENCY),
-        snap.warehouse_privileges.len(),
-    ));
+    {
+        Ok(r) => {
+            (snap.role_edges, snap.warehouse_privileges) = split_role_grants(&r);
+            snap.datasets.push(dataset(
+                "role_edges",
+                src,
+                Some(USAGE_LATENCY),
+                snap.role_edges.len(),
+            ));
+            snap.datasets.push(dataset(
+                "warehouse_privileges",
+                src,
+                Some(USAGE_LATENCY),
+                snap.warehouse_privileges.len(),
+            ));
+        }
+        Err(e) => {
+            let msg = access_denied(e)?;
+            for name in ["role_edges", "warehouse_privileges"] {
+                snap.datasets
+                    .push(failed(name, src, Some(USAGE_LATENCY), &msg));
+            }
+        }
+    }
     Ok(snap)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_access_denied_is_recorded_as_failed() {
+        assert!(
+            access_denied(
+                "SQL compilation error: Object 'X' does not exist or not authorized.".into()
+            )
+            .is_ok()
+        );
+        assert!(
+            access_denied(
+                "SQL access control error: Insufficient privileges to operate on schema".into()
+            )
+            .is_ok()
+        );
+        assert!(access_denied("Cannot reach Snowflake: timeout".into()).is_err());
+    }
 
     fn rows<const N: usize>(cols: [&str; N], data: &[[&str; N]]) -> Rows {
         Rows {
