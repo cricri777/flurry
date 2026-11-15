@@ -227,6 +227,25 @@ impl Store {
         Ok(id)
     }
 
+    /// Replaces one dataset row of the latest snapshot.
+    pub fn record(&mut self, d: crate::collect::Dataset) -> Result<(), String> {
+        let tx = self.0.transaction().map_err(e)?;
+        let id: i64 = tx
+            .query_row("SELECT MAX(id) FROM snapshots", [], |r| r.get(0))
+            .map_err(e)?;
+        tx.execute(
+            "DELETE FROM datasets WHERE snapshot_id = ? AND name = ?",
+            params![id, d.name],
+        )
+        .map_err(e)?;
+        let snap = crate::collect::Snapshot {
+            datasets: vec![d],
+            ..Default::default()
+        };
+        insert_rows(&tx, id, &snap)?;
+        tx.commit().map_err(e)
+    }
+
     fn table(&self, sql: &str, args: &[&dyn rusqlite::ToSql]) -> Result<Table, String> {
         let mut stmt = self.0.prepare(sql).map_err(e)?;
         let headers: Vec<String> = stmt.column_names().map(|c| c.to_string()).collect();
@@ -502,6 +521,31 @@ mod tests {
         migrate(&conn).unwrap();
         conn.execute("UPDATE datasets SET error = NULL", [])
             .unwrap();
+    }
+
+    #[test]
+    fn record_replaces_one_dataset_row() {
+        let mut s = Store::in_memory();
+        s.save("default", &snapshot(&["ANALYST"])).unwrap();
+        for rows in [3, 5] {
+            s.record(Dataset {
+                name: "refresh all roles".into(),
+                source: "SHOW GRANTS TO/OF ROLE",
+                latency_minutes: None,
+                rows,
+                collected_at: 1_700_000_000,
+                error: None,
+            })
+            .unwrap();
+        }
+        let d = s.datasets().unwrap();
+        let rows: Vec<_> = d
+            .rows
+            .iter()
+            .filter(|r| r[0] == "refresh all roles")
+            .collect();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0][2], "5");
     }
 
     #[test]

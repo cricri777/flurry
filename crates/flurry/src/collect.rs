@@ -150,15 +150,16 @@ fn keep(r: Rows, keep: impl Fn(&Rows, usize) -> bool) -> Rows {
     Rows { cols: r.cols, rows }
 }
 
+/// Error suffix for an entity that no longer exists or is hidden from the active role.
+pub const NOT_FOUND: &str = "not found or not visible to the active role";
+
 // SHOW ... LIKE is a case-insensitive pattern, so the exact name is matched afterwards.
 async fn show_exact(s: &Session, object: &str, name: &str) -> Result<Rows, String> {
     let pattern = name.replace('\\', "\\\\").replace('\'', "''");
     let r = s.query(&format!("SHOW {object} LIKE '{pattern}'")).await?;
     let r = keep(r, |r, i| r.get(i, "name").as_deref() == Some(name));
     if r.rows.is_empty() {
-        return Err(format!(
-            "{name}: not found or not visible to the active role"
-        ));
+        return Err(format!("{name}: {NOT_FOUND}"));
     }
     Ok(r)
 }
