@@ -24,6 +24,7 @@ flurry [command]
 
 - Only `sync`, `refresh`, `connection test` and `R` in the TUI contact Snowflake; everything else is local.
 - `refresh --all` gives current (not up to 120 min delayed) grants for the entities already listed, but costs a few `SHOW` per entity; entities no longer visible are skipped, and `sync` is faster and also finds new ones.
+- `refresh` stops if the login's account fingerprint differs from the latest snapshot's; run `sync` to start a new snapshot.
 - Progress goes to stderr and results to stdout; errors exit with status 1.
 
 ## TUI keys
