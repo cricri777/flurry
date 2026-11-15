@@ -1,7 +1,11 @@
 # Feature workflow
 
-- Work each feature in its own git worktree.
-- Add unit tests for the feature.
-- After each feature, run the `flurry-verification` skill to confirm it works.
-- If the feature touches Snowflake connectivity or sync, also run `flurry-live-verification`.
-- Commit, push and open a GitHub PR for each feature.
+- Work each feature in its own git worktree and branch.
+- Write code following the project's conventions.
+- Add or update unit tests for the feature.
+- These gates must pass: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`.
+- Run the `flurry-verification` skill to execute the feature and confirm it works.
+- If the feature touches Snowflake connectivity or sync, also run `flurry-live-verification`; the user runs the live command.
+- If a feature cannot be verified, say so in the PR and do not claim it works.
+- Rebase on `main` before opening the PR.
+- Commit, push and open a GitHub PR listing the commands run and their results.

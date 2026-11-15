@@ -10,7 +10,7 @@ Flurry is a Rust workspace; the app is the `flurry` crate. Run everything from t
 ## Rules
 
 - Never ask for, read, print or store a Snowflake password, MFA code or token; do not `cat` `~/.config/snowflake/` files.
-- `sync` and `connection test` talk to a real account and need a password and a live MFA code: tell the user to run them with the `!` prefix, then read the local results with `status` and `list`.
+- `sync` and `connection test` talk to a real account and need a live login (password and MFA code, or a key): tell the user to run them with the `!` prefix, then read the local results with `status` and `list`.
 - For your own tests use a throwaway data directory so the user's real snapshot is never touched.
 
 ## Check the code
@@ -34,17 +34,9 @@ target/debug/flurry users list --format json
 - To test a new table or query, extend `seed.py` so the fixture stays synthetic; never copy real account metadata into the repo.
 - The seed refuses to run unless `XDG_DATA_HOME` is under `/tmp`.
 
-## Test the TUI
+## TUI
 
-The TUI needs a terminal, so run it in tmux with the same exported `XDG_*` variables:
-
-```bash
-tmux new-session -d -s flurry-test -x 80 -y 12 "target/debug/flurry"
-tmux send-keys -t flurry-test j j          # move down
-tmux capture-pane -t flurry-test -p        # read the screen
-tmux send-keys -t flurry-test q            # quit
-tmux kill-session -t flurry-test 2>/dev/null
-```
+Agents run in their own bash session without a terminal, so they do not drive the TUI. Verify TUI behavior with unit tests and the CLI commands above.
 
 ## Test config handling
 
