@@ -13,10 +13,11 @@ flurry [command]
 | `flurry` | Opens the TUI over the roles of the latest local snapshot. |
 | `flurry sync [-p <profile>]` | Collects users, roles, warehouses and grants from Snowflake into a new snapshot. |
 | `flurry status` | Shows the latest snapshot and the source, time and freshness of each dataset. |
-| `flurry connection test [-p <profile>]` | Prints the account, user, role and warehouse of a login. |
+| `flurry connection test [-p <profile>]` | Prints the account fingerprint, user, role and warehouse of a login. |
+| `flurry refresh user\|role\|warehouse <name> [-p <profile>]` | Re-reads one entity and its grants with targeted `SHOW` commands into the latest snapshot. |
 | `flurry users\|roles\|warehouses list [-s <text>] [-f table\|json]` | Lists entities from the latest snapshot, offline. |
 
-- Only `sync` and `connection test` contact Snowflake; everything else is local.
+- Only `sync`, `refresh` and `connection test` contact Snowflake; everything else is local.
 - Progress goes to stderr and results to stdout; errors exit with status 1.
 
 ## TUI keys
