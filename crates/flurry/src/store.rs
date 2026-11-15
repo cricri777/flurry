@@ -272,6 +272,46 @@ impl Store {
         self.table(&sql, &[&format!("%{pattern}%")])
     }
 
+    /// Builds the RBAC graph of the latest snapshot, flagging failed datasets as incomplete.
+    pub fn graph(&self) -> Result<flurry_graph::Graph, String> {
+        let latest = "snapshot_id = (SELECT MAX(id) FROM snapshots)";
+        let mut g = flurry_graph::Graph::default();
+        for r in self
+            .table(
+                &format!("SELECT user_name, role_name FROM user_roles WHERE {latest}"),
+                &[],
+            )?
+            .rows
+        {
+            g.add_user_role(&r[0], &r[1]);
+        }
+        for r in self
+            .table(
+                &format!("SELECT parent, child FROM role_edges WHERE {latest}"),
+                &[],
+            )?
+            .rows
+        {
+            g.add_role_edge(&r[0], &r[1]);
+        }
+        let sql = format!(
+            "SELECT role_name, warehouse, privilege FROM warehouse_privileges WHERE {latest}"
+        );
+        for r in self.table(&sql, &[])?.rows {
+            g.add_warehouse_privilege(&r[0], &r[1], &r[2]);
+        }
+        let sql = format!("SELECT name FROM datasets WHERE {latest} AND error IS NOT NULL");
+        for r in self.table(&sql, &[])?.rows {
+            g.mark_incomplete(&r[0]);
+        }
+        Ok(g)
+    }
+
+    /// True when the latest snapshot has an entity with exactly this name.
+    pub fn has(&self, entity: Entity, name: &str) -> Result<bool, String> {
+        Ok(self.list(entity, name)?.rows.iter().any(|r| r[0] == name))
+    }
+
     /// Latest snapshot header line, or None when nothing was synced yet.
     pub fn latest(&self) -> Result<Option<Table>, String> {
         let sql = format!(
@@ -419,6 +459,24 @@ mod tests {
         assert_eq!(d.rows[0][4], "current");
         assert_eq!(d.rows[1][4], "up to 120 min delayed");
         assert_eq!(d.rows[1][3], "2023-11-14 22:13:20");
+    }
+
+    #[test]
+    fn graph_reflects_the_latest_snapshot_and_failed_datasets() {
+        let mut s = Store::in_memory();
+        let mut snap = snapshot(&["ANALYST"]);
+        snap.datasets[1].name = "role_edges".into();
+        snap.datasets[1].error = Some("no access".into());
+        s.save("default", &snap).unwrap();
+        let g = s.graph().unwrap();
+        assert_eq!(
+            g.access("ALICE", "WH", "USAGE"),
+            flurry_graph::Access::Unknown {
+                missing: vec!["role_edges".into()]
+            }
+        );
+        assert!(s.has(Entity::Roles, "ANALYST").unwrap());
+        assert!(!s.has(Entity::Roles, "ANALY").unwrap());
     }
 
     #[test]
