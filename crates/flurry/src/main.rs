@@ -173,7 +173,9 @@ async fn sync(p: &Profile) -> Result<(), String> {
         }
     }
     if snap.datasets.iter().any(|d| d.error.is_some()) {
-        eprintln!("Warning: some datasets failed; their data is unknown, not empty.");
+        return Err(
+            "snapshot saved, but some datasets failed; their data is unknown, not empty.".into(),
+        );
     }
     Ok(())
 }
