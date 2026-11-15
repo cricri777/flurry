@@ -396,8 +396,19 @@ fn tui() -> Result<(), String> {
     run_tui(&items).map_err(|e| e.to_string())
 }
 
+// Restores the terminal however the TUI loop exits, including on errors.
+struct TermGuard;
+
+impl Drop for TermGuard {
+    fn drop(&mut self) {
+        let _ = execute!(stdout(), crossterm::cursor::Show, LeaveAlternateScreen);
+        let _ = terminal::disable_raw_mode();
+    }
+}
+
 fn run_tui(items: &[String]) -> std::io::Result<()> {
     terminal::enable_raw_mode()?;
+    let _guard = TermGuard;
     execute!(stdout(), EnterAlternateScreen, crossterm::cursor::Hide)?;
     let mut s = State {
         mode: Mode::Normal,
@@ -430,8 +441,7 @@ fn run_tui(items: &[String]) -> std::io::Result<()> {
         };
         s = handle_key(s, key, items.len());
     }
-    execute!(stdout(), crossterm::cursor::Show, LeaveAlternateScreen)?;
-    terminal::disable_raw_mode()
+    Ok(())
 }
 
 #[tokio::main]
