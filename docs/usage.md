@@ -16,6 +16,7 @@ flurry [command]
 | `flurry connection test [-p <profile>]` | Prints the account fingerprint, user, role and warehouse of a login. |
 | `flurry refresh user\|role\|warehouse <name> \| --all [-p <profile>]` | Re-reads one entity (or, with `--all`, every entity of the latest snapshot) and its grants with targeted `SHOW` commands into the latest snapshot. |
 | `flurry access <user> <warehouse> [--privilege <privilege>] [-f table\|json]` | Explains offline which role path gives the user the privilege (default `USAGE`), or says `NO ACCESS` or `UNKNOWN / INCOMPLETE`; unquoted names are upper-cased like in Snowflake. |
+| `flurry roles inherits <role> [--inverse] [-f table\|json]` | Lists, offline, the roles a role inherits directly or transitively (or, with `--inverse`, the roles that inherit it); warns `UNKNOWN / INCOMPLETE` on stderr when role inheritance was not collected. |
 | `flurry users\|roles\|warehouses list [-s <text>] [-f table\|json]` | Lists entities from the latest snapshot, offline. |
 
 - Only `sync`, `refresh` and `connection test` contact Snowflake; everything else is local.
@@ -66,5 +67,5 @@ Connections follow the [Snowflake CLI format](https://docs.snowflake.com/en/deve
 
 ## Not supported yet
 
-- Role inheritance queries, snapshot history and exports.
+- Snapshot history and exports.
 - Search inside the TUI.

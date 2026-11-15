@@ -77,6 +77,11 @@ impl Graph {
         self.incomplete.insert(dataset.into());
     }
 
+    /// False when the role inheritance dataset failed, so traversals may miss roles.
+    pub fn role_edges_complete(&self) -> bool {
+        !self.incomplete.contains("role_edges")
+    }
+
     /// Roles `role` inherits, directly or transitively.
     pub fn inherited_roles(&self, role: &str) -> Vec<String> {
         reach(&self.children, role)
@@ -200,6 +205,16 @@ mod tests {
 
     fn chain(r: &[&str]) -> Vec<String> {
         r.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn role_edges_completeness_follows_the_failed_dataset() {
+        let mut g = Graph::default();
+        assert!(g.role_edges_complete());
+        g.mark_incomplete("user_roles");
+        assert!(g.role_edges_complete());
+        g.mark_incomplete("role_edges");
+        assert!(!g.role_edges_complete());
     }
 
     #[test]

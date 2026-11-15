@@ -69,7 +69,7 @@ enum Cmd {
     /// Local roles from the latest snapshot.
     Roles {
         #[command(subcommand)]
-        action: ListCmd,
+        action: RolesCmd,
     },
     /// Local warehouses from the latest snapshot.
     Warehouses {
@@ -87,6 +87,22 @@ enum ConnectionCmd {
 enum ListCmd {
     /// List entities from the latest local snapshot.
     List(ListArgs),
+}
+
+#[derive(Subcommand)]
+enum RolesCmd {
+    /// List roles from the latest local snapshot.
+    List(ListArgs),
+    /// List the roles a role inherits, directly or transitively.
+    Inherits {
+        /// Exact role name; unquoted names are upper-cased like in Snowflake.
+        role: String,
+        /// List the roles that inherit it instead.
+        #[arg(short, long)]
+        inverse: bool,
+        #[arg(short, long, value_enum, default_value = "table")]
+        format: Format,
+    },
 }
 
 #[derive(Args)]
@@ -378,6 +394,31 @@ fn access(user: &str, warehouse: &str, privilege: &str, format: Format) -> Resul
     Ok(())
 }
 
+fn inherits(role: &str, inverse: bool, format: Format) -> Result<(), String> {
+    let role = ident(role);
+    let store = Store::open()?;
+    if !store.has(Entity::Roles, &role)? {
+        return Err(format!("role '{role}' is not in the latest snapshot"));
+    }
+    let graph = store.graph()?;
+    let roles = if inverse {
+        graph.inheriting_roles(&role)
+    } else {
+        graph.inherited_roles(&role)
+    };
+    if !graph.role_edges_complete() {
+        eprintln!(
+            "UNKNOWN / INCOMPLETE: role_edges was not collected, so this list may be missing roles."
+        );
+    }
+    let table = Table {
+        headers: vec!["role".into()],
+        rows: roles.into_iter().map(|r| vec![r]).collect(),
+    };
+    print_table(&table, format);
+    Ok(())
+}
+
 fn list(entity: Entity, a: &ListArgs) -> Result<(), String> {
     print_table(&Store::open()?.list(entity, &a.search)?, a.format);
     Ok(())
@@ -469,8 +510,16 @@ async fn main() {
             action: ListCmd::List(a),
         }) => list(Entity::Users, &a),
         Some(Cmd::Roles {
-            action: ListCmd::List(a),
+            action: RolesCmd::List(a),
         }) => list(Entity::Roles, &a),
+        Some(Cmd::Roles {
+            action:
+                RolesCmd::Inherits {
+                    role,
+                    inverse,
+                    format,
+                },
+        }) => inherits(&role, inverse, format),
         Some(Cmd::Warehouses {
             action: ListCmd::List(a),
         }) => list(Entity::Warehouses, &a),
