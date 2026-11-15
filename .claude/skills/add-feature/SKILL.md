@@ -5,6 +5,8 @@ description: Process for adding a feature to the flurry repo: work in its own gi
 
 # Adding a feature to Flurry
 
+Follow every step in order; the task is not done until the PR is open and its URL is reported. Do not stop after the code or the verification, and do not edit files on `main` or leave changes uncommitted (this applies to skill and docs changes too).
+
 Follow this order. The rules live in [CONTRIBUTING.md](../../../CONTRIBUTING.md) and [AGENTS.md](../../../AGENTS.md); read them, do not restate them in the PR.
 
 ## 1. Scope it
@@ -15,7 +17,7 @@ Follow this order. The rules live in [CONTRIBUTING.md](../../../CONTRIBUTING.md)
 
 ## 2. Create the worktree and branch
 
-Never develop on `main`.
+Never develop on `main`. Do this before the first edit; if you already edited on `main`, move the changes into the worktree and restore `main`.
 
 ```bash
 git fetch origin
@@ -23,7 +25,7 @@ git worktree add ../flurry-<slug> -b feat/<slug> origin/main
 cd ../flurry-<slug>
 ```
 
-Use `feat/` for features, `fix/` for bugs and `chore/` for tooling. The first `cargo build` in a new worktree recompiles everything; it is fine to reuse the main checkout's build with `CARGO_TARGET_DIR=<main>/target` if build time matters.
+Use `feat/` for features, `fix/` for bugs and `chore/` for tooling. The first `cargo build` in a new worktree recompiles everything; do not share `CARGO_TARGET_DIR` between worktrees, because another worktree's binary can silently run the wrong schema.
 
 ## 3. Implement
 
@@ -47,9 +49,14 @@ If `cargo fmt --all --check` fails, run `cargo fmt --all` and check again.
 
 ## 5. Verify the feature runs
 
-- Run the `flurry-verification` skill to build the CLI or TUI and exercise the feature offline with a synthetic snapshot and a throwaway `XDG_DATA_HOME`.
-- If the feature touches Snowflake connectivity or sync, also run the `flurry-live-verification` skill. The user runs the live `sync` or `connection test` command; you do not handle their credentials.
-- If something cannot be verified here, say so in the PR. Do not claim it works.
+Tests passing is not verification; run the feature itself. Follow `flurry-verification` from the worktree root:
+
+1. Build in the worktree (`cargo build -p flurry`) and confirm `target/debug/flurry` is that build, not a stale one.
+2. Export a throwaway `XDG_DATA_HOME` and `XDG_CACHE_HOME` under `/tmp`, then run `seed.py`. If it fails on the schema, update `seed.py` as part of the feature.
+3. Exercise every changed CLI command and check its output against the expected behavior.
+4. For any TUI change, drive the TUI with `tui.py` using the exact keys or `:` commands the feature adds, and check the final screen. Cover the normal and the error or empty case.
+5. If the feature touches Snowflake connectivity or sync, also run `flurry-live-verification`; the user runs the live `sync` or `connection test` command, you do not handle their credentials.
+6. Record each command and what you saw for the PR. If something cannot be verified here, say so in the PR and do not claim it works.
 
 ## 6. Commit
 
@@ -61,7 +68,7 @@ git commit -m "<imperative summary>"
 Commit only the files for this feature. End the commit message with:
 
 ```
-Co-Authored-By: Claude Haiku 5.5 <noreply@anthropic.com>
+Co-Authored-By: <current model name> <noreply@anthropic.com>
 ```
 
 ## 7. Rebase, push and open the PR
