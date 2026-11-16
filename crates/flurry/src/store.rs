@@ -341,6 +341,15 @@ impl Store {
         Ok((!t.rows.is_empty()).then_some(t))
     }
 
+    /// Every snapshot, newest first, with the number of datasets that failed to collect.
+    pub fn snapshots(&self) -> Result<Table, String> {
+        let sql = format!(
+            "SELECT id, profile, account, active_role, {} AS taken_at_utc, (SELECT COUNT(*) FROM datasets d WHERE d.snapshot_id = s.id AND d.error IS NOT NULL) AS failed_datasets FROM snapshots s ORDER BY id DESC",
+            ts("created_at")
+        );
+        self.table(&sql, &[])
+    }
+
     pub fn datasets(&self) -> Result<Table, String> {
         let sql = format!(
             "SELECT name, source, row_count, {} AS collected_at_utc, COALESCE('up to ' || latency_minutes || ' min delayed', 'current') AS freshness, COALESCE('FAILED: ' || error, 'ok') AS status FROM datasets WHERE snapshot_id = (SELECT MAX(id) FROM snapshots) ORDER BY rowid",
@@ -467,6 +476,21 @@ mod tests {
         assert_eq!(roles.rows.len(), 1);
         assert_eq!(roles.rows[0][0], "NEW_ROLE");
         assert_eq!(s.latest().unwrap().unwrap().rows[0][0], second.to_string());
+    }
+
+    #[test]
+    fn snapshots_are_listed_newest_first_with_failed_dataset_count() {
+        let mut s = Store::in_memory();
+        assert!(s.snapshots().unwrap().rows.is_empty());
+        s.save("default", &snapshot(&["ANALYST"])).unwrap();
+        let mut failed = snapshot(&["ANALYST"]);
+        failed.datasets[1].error = Some("no access".into());
+        s.save("other", &failed).unwrap();
+        let t = s.snapshots().unwrap();
+        assert_eq!(t.rows[0][..2], ["2", "other"]);
+        assert_eq!(t.rows[0][5], "1");
+        assert_eq!(t.rows[1][..2], ["1", "default"]);
+        assert_eq!(t.rows[1][5], "0");
     }
 
     #[test]

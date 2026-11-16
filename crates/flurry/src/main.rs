@@ -47,6 +47,11 @@ enum Cmd {
     },
     /// Show the latest snapshot and the freshness of each dataset.
     Status,
+    /// List the local snapshots, newest first.
+    Snapshots {
+        #[arg(short, long, value_enum, default_value = "table")]
+        format: Format,
+    },
     /// Check the Snowflake connection.
     Connection {
         #[command(subcommand)]
@@ -333,6 +338,11 @@ fn status() -> Result<(), String> {
     Ok(())
 }
 
+fn snapshots(format: Format) -> Result<(), String> {
+    print_table(&Store::open()?.snapshots()?, format);
+    Ok(())
+}
+
 async fn connection_test(p: &Profile) -> Result<(), String> {
     let session = connect(p).await?;
     let id = session.query(collect::IDENTITY_SQL).await?;
@@ -545,6 +555,7 @@ async fn main() {
             ..
         }) => refresh(kind, name, &profile).await,
         Some(Cmd::Status) => status(),
+        Some(Cmd::Snapshots { format }) => snapshots(format),
         Some(Cmd::Connection {
             action: ConnectionCmd::Test(p),
         }) => connection_test(&p).await,
