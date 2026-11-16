@@ -8,7 +8,7 @@ Install Rust and clone the repository as described in [CONTRIBUTING.md](../CONTR
 
 ## 1. Configure a default connection
 
-Create `~/.config/snowflake/config.toml` in the [Snowflake CLI format](https://docs.snowflake.com/en/developer-guide/snowflake-cli/connecting/configure-cli) (unless `SNOWFLAKE_HOME` is set or `~/.snowflake` exists); the file locations, profile selection rules and login methods are in [usage.md](usage.md#snowflake-configuration).
+Create `~/.config/snowflake/config.toml` in the [Snowflake CLI format](https://docs.snowflake.com/en/developer-guide/snowflake-cli/connecting/configure-cli) (the usual location); the other file locations, profile selection rules and login methods are in [usage.md](usage.md#snowflake-configuration).
 
 ```bash
 mkdir -p ~/.config/snowflake
@@ -53,7 +53,7 @@ To make it permanent, add the same line to your shell startup file (for example 
 flurry --help
 ```
 
-Until `flurry` is on `PATH`, you can run any command from the repository root with `cargo run -p flurry -- <args>`, for example `cargo run -p flurry -- --help`.
+Until `flurry` is on `PATH`, run it with `cargo run` as described in [CONTRIBUTING.md](../CONTRIBUTING.md#3-run-flurry).
 
 ## 3. Test the connection and sync
 
