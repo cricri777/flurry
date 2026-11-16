@@ -52,6 +52,16 @@ enum Cmd {
         #[arg(short, long, value_enum, default_value = "table")]
         format: Format,
     },
+    /// Compare two local snapshots; defaults to the latest and the previous one of the same account and role.
+    Diff {
+        /// Older snapshot id (see `flurry snapshots`).
+        #[arg(requires = "to")]
+        from: Option<i64>,
+        /// Newer snapshot id.
+        to: Option<i64>,
+        #[arg(short, long, value_enum, default_value = "table")]
+        format: Format,
+    },
     /// Check the Snowflake connection.
     Connection {
         #[command(subcommand)]
@@ -343,6 +353,31 @@ fn snapshots(format: Format) -> Result<(), String> {
     Ok(())
 }
 
+fn diff(ids: Option<(i64, i64)>, format: Format) -> Result<(), String> {
+    let store = Store::open()?;
+    let (from, to) = match ids {
+        Some(ids) => ids,
+        None => store.last_two()?.ok_or(
+            "Need two snapshots of the same account and active role to compare. Run `flurry sync` again, or pass two ids.",
+        )?,
+    };
+    let (table, incomplete) = store.diff(from, to)?;
+    if let Some(m) = store.scope_mismatch(from, to)? {
+        eprintln!(
+            "WARNING: snapshots {from} and {to} differ ({m}), so the changes include what each login could see."
+        );
+    }
+    if !incomplete.is_empty() {
+        eprintln!(
+            "UNKNOWN / INCOMPLETE: {} failed to collect in snapshot {from} or {to}, so its changes may be wrong.",
+            incomplete.join(", ")
+        );
+    }
+    eprintln!("Changes from snapshot {from} to snapshot {to}:");
+    print_table(&table, format);
+    Ok(())
+}
+
 async fn connection_test(p: &Profile) -> Result<(), String> {
     let session = connect(p).await?;
     let id = session.query(collect::IDENTITY_SQL).await?;
@@ -556,6 +591,7 @@ async fn main() {
         }) => refresh(kind, name, &profile).await,
         Some(Cmd::Status) => status(),
         Some(Cmd::Snapshots { format }) => snapshots(format),
+        Some(Cmd::Diff { from, to, format }) => diff(from.zip(to), format),
         Some(Cmd::Connection {
             action: ConnectionCmd::Test(p),
         }) => connection_test(&p).await,

@@ -350,6 +350,81 @@ impl Store {
         self.table(&sql, &[])
     }
 
+    /// Ids of the newest snapshot and the previous one with the same account and active role.
+    pub fn last_two(&self) -> Result<Option<(i64, i64)>, String> {
+        let t = self.table(
+            "SELECT p.id, n.id FROM snapshots n JOIN snapshots p ON p.account = n.account AND p.active_role = n.active_role AND p.id < n.id WHERE n.id = (SELECT MAX(id) FROM snapshots) ORDER BY p.id DESC LIMIT 1",
+            &[],
+        )?;
+        let id = |s: &str| s.parse::<i64>().map_err(|_| "bad snapshot id".to_string());
+        t.rows
+            .first()
+            .map(|r| Ok((id(&r[0])?, id(&r[1])?)))
+            .transpose()
+    }
+
+    /// Describes how two snapshots differ in account or active role, which makes their diff misleading.
+    pub fn scope_mismatch(&self, from: i64, to: i64) -> Result<Option<String>, String> {
+        let t = self.table(
+            "SELECT a.account, b.account, a.active_role, b.active_role FROM snapshots a, snapshots b WHERE a.id = ?1 AND b.id = ?2",
+            &[&from, &to],
+        )?;
+        let Some(r) = t.rows.first() else {
+            return Ok(None);
+        };
+        let parts: Vec<String> = [("account", 0), ("active role", 2)]
+            .into_iter()
+            .filter(|&(_, i)| r[i] != r[i + 1])
+            .map(|(label, i)| format!("{label} {} vs {}", r[i], r[i + 1]))
+            .collect();
+        Ok((!parts.is_empty()).then(|| parts.join(", ")))
+    }
+
+    /// Items added to or removed from `from` to reach `to`, plus the kinds whose dataset failed in either.
+    pub fn diff(&self, from: i64, to: i64) -> Result<(Table, Vec<String>), String> {
+        for id in [from, to] {
+            if self
+                .table("SELECT 1 FROM snapshots WHERE id = ?", &[&id])?
+                .rows
+                .is_empty()
+            {
+                return Err(format!("snapshot {id} does not exist"));
+            }
+        }
+        let kinds = [
+            ("users", "name"),
+            ("roles", "name"),
+            ("warehouses", "name"),
+            ("user_roles", "user_name || ' -> ' || role_name"),
+            ("role_edges", "parent || ' inherits ' || child"),
+            (
+                "warehouse_privileges",
+                "role_name || ' ' || privilege || ' ON ' || warehouse",
+            ),
+        ];
+        let mut rows = Vec::new();
+        let mut incomplete = Vec::new();
+        for (kind, item) in kinds {
+            for (change, a, b) in [("added", from, to), ("removed", to, from)] {
+                let sql = format!(
+                    "SELECT {item} FROM {kind} WHERE snapshot_id = ?1 EXCEPT SELECT {item} FROM {kind} WHERE snapshot_id = ?2 ORDER BY 1"
+                );
+                for r in self.table(&sql, &[&b, &a])?.rows {
+                    rows.push(vec![kind.to_string(), change.to_string(), r[0].clone()]);
+                }
+            }
+            let failed = self.table(
+                "SELECT 1 FROM datasets WHERE name = ?1 AND error IS NOT NULL AND snapshot_id IN (?2, ?3)",
+                &[&kind, &from, &to],
+            )?;
+            if !failed.rows.is_empty() {
+                incomplete.push(kind.to_string());
+            }
+        }
+        let headers = ["kind", "change", "item"].map(String::from).to_vec();
+        Ok((Table { headers, rows }, incomplete))
+    }
+
     pub fn datasets(&self) -> Result<Table, String> {
         let sql = format!(
             "SELECT name, source, row_count, {} AS collected_at_utc, COALESCE('up to ' || latency_minutes || ' min delayed', 'current') AS freshness, COALESCE('FAILED: ' || error, 'ok') AS status FROM datasets WHERE snapshot_id = (SELECT MAX(id) FROM snapshots) ORDER BY rowid",
@@ -491,6 +566,50 @@ mod tests {
         assert_eq!(t.rows[0][5], "1");
         assert_eq!(t.rows[1][..2], ["1", "default"]);
         assert_eq!(t.rows[1][5], "0");
+    }
+
+    #[test]
+    fn diff_lists_added_and_removed_items_and_flags_failed_datasets() {
+        let mut s = Store::in_memory();
+        assert!(s.last_two().unwrap().is_none());
+        s.save("default", &snapshot(&["ANALYST", "OLD_ROLE"]))
+            .unwrap();
+        let mut next = snapshot(&["ANALYST", "NEW_ROLE"]);
+        next.role_edges.clear();
+        next.datasets[1].error = Some("no access".into());
+        s.save("default", &next).unwrap();
+        assert_eq!(s.last_two().unwrap(), Some((1, 2)));
+        let (t, incomplete) = s.diff(1, 2).unwrap();
+        assert_eq!(
+            t.rows,
+            [
+                ["roles", "added", "NEW_ROLE"],
+                ["roles", "removed", "OLD_ROLE"],
+                ["role_edges", "removed", "ANALYST inherits DATA_READ_ONLY"],
+            ]
+        );
+        assert_eq!(incomplete, ["role_edges"]);
+        assert!(s.diff(1, 1).unwrap().0.rows.is_empty());
+        assert!(s.diff(1, 9).is_err());
+    }
+
+    #[test]
+    fn default_diff_pairs_only_snapshots_of_the_same_account_and_role() {
+        let mut s = Store::in_memory();
+        s.save("prod", &snapshot(&["ANALYST"])).unwrap();
+        assert!(s.last_two().unwrap().is_none());
+        let mut other = snapshot(&["ANALYST"]);
+        other.account = "OTHER".into();
+        other.active_role = "PUBLIC".into();
+        s.save("dev", &other).unwrap();
+        assert!(s.last_two().unwrap().is_none());
+        assert_eq!(
+            s.scope_mismatch(1, 2).unwrap().as_deref(),
+            Some("account ACME vs OTHER, active role ANALYST vs PUBLIC")
+        );
+        s.save("prod", &snapshot(&["ANALYST"])).unwrap();
+        assert_eq!(s.last_two().unwrap(), Some((1, 3)));
+        assert!(s.scope_mismatch(1, 3).unwrap().is_none());
     }
 
     #[test]
