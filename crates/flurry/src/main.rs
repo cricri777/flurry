@@ -52,7 +52,7 @@ enum Cmd {
         #[arg(short, long, value_enum, default_value = "table")]
         format: Format,
     },
-    /// Compare two local snapshots; defaults to the previous and the latest.
+    /// Compare two local snapshots; defaults to the latest and the previous one of the same account and role.
     Diff {
         /// Older snapshot id (see `flurry snapshots`).
         #[arg(requires = "to")]
@@ -357,11 +357,16 @@ fn diff(ids: Option<(i64, i64)>, format: Format) -> Result<(), String> {
     let store = Store::open()?;
     let (from, to) = match ids {
         Some(ids) => ids,
-        None => store
-            .last_two()?
-            .ok_or("Need at least two snapshots to compare. Run `flurry sync` again.")?,
+        None => store.last_two()?.ok_or(
+            "Need two snapshots of the same account and active role to compare. Run `flurry sync` again, or pass two ids.",
+        )?,
     };
     let (table, incomplete) = store.diff(from, to)?;
+    if let Some(m) = store.scope_mismatch(from, to)? {
+        eprintln!(
+            "WARNING: snapshots {from} and {to} differ ({m}), so the changes include what each login could see."
+        );
+    }
     if !incomplete.is_empty() {
         eprintln!(
             "UNKNOWN / INCOMPLETE: {} failed to collect in snapshot {from} or {to}, so its changes may be wrong.",

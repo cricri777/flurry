@@ -350,16 +350,34 @@ impl Store {
         self.table(&sql, &[])
     }
 
-    /// Ids of the second-newest and newest snapshots, when there are at least two.
+    /// Ids of the newest snapshot and the previous one with the same account and active role.
     pub fn last_two(&self) -> Result<Option<(i64, i64)>, String> {
-        let t = self.table("SELECT id FROM snapshots ORDER BY id DESC LIMIT 2", &[])?;
-        Ok(match t.rows.as_slice() {
-            [new, old] => Some((
-                old[0].parse().map_err(|_| "bad snapshot id")?,
-                new[0].parse().map_err(|_| "bad snapshot id")?,
-            )),
-            _ => None,
-        })
+        let t = self.table(
+            "SELECT p.id, n.id FROM snapshots n JOIN snapshots p ON p.account = n.account AND p.active_role = n.active_role AND p.id < n.id WHERE n.id = (SELECT MAX(id) FROM snapshots) ORDER BY p.id DESC LIMIT 1",
+            &[],
+        )?;
+        let id = |s: &str| s.parse::<i64>().map_err(|_| "bad snapshot id".to_string());
+        t.rows
+            .first()
+            .map(|r| Ok((id(&r[0])?, id(&r[1])?)))
+            .transpose()
+    }
+
+    /// Describes how two snapshots differ in account or active role, which makes their diff misleading.
+    pub fn scope_mismatch(&self, from: i64, to: i64) -> Result<Option<String>, String> {
+        let t = self.table(
+            "SELECT a.account, b.account, a.active_role, b.active_role FROM snapshots a, snapshots b WHERE a.id = ?1 AND b.id = ?2",
+            &[&from, &to],
+        )?;
+        let Some(r) = t.rows.first() else {
+            return Ok(None);
+        };
+        let parts: Vec<String> = [("account", 0), ("active role", 2)]
+            .into_iter()
+            .filter(|&(_, i)| r[i] != r[i + 1])
+            .map(|(label, i)| format!("{label} {} vs {}", r[i], r[i + 1]))
+            .collect();
+        Ok((!parts.is_empty()).then(|| parts.join(", ")))
     }
 
     /// Items added to or removed from `from` to reach `to`, plus the kinds whose dataset failed in either.
@@ -573,6 +591,25 @@ mod tests {
         assert_eq!(incomplete, ["role_edges"]);
         assert!(s.diff(1, 1).unwrap().0.rows.is_empty());
         assert!(s.diff(1, 9).is_err());
+    }
+
+    #[test]
+    fn default_diff_pairs_only_snapshots_of_the_same_account_and_role() {
+        let mut s = Store::in_memory();
+        s.save("prod", &snapshot(&["ANALYST"])).unwrap();
+        assert!(s.last_two().unwrap().is_none());
+        let mut other = snapshot(&["ANALYST"]);
+        other.account = "OTHER".into();
+        other.active_role = "PUBLIC".into();
+        s.save("dev", &other).unwrap();
+        assert!(s.last_two().unwrap().is_none());
+        assert_eq!(
+            s.scope_mismatch(1, 2).unwrap().as_deref(),
+            Some("account ACME vs OTHER, active role ANALYST vs PUBLIC")
+        );
+        s.save("prod", &snapshot(&["ANALYST"])).unwrap();
+        assert_eq!(s.last_two().unwrap(), Some((1, 3)));
+        assert!(s.scope_mismatch(1, 3).unwrap().is_none());
     }
 
     #[test]

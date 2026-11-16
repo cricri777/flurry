@@ -14,7 +14,7 @@ flurry [command]
 | `flurry sync [-p <profile>]` | Collects users, roles, warehouses and grants from Snowflake into a new snapshot. |
 | `flurry status` | Shows the latest snapshot and the source, time and freshness of each dataset. |
 | `flurry snapshots [-f table\|json\|csv]` | Lists the local snapshots, newest first, with the number of datasets that failed to collect or refresh. |
-| `flurry diff [<from> <to>] [-f table\|json\|csv]` | Lists the users, roles, warehouses and grants added or removed between two snapshots (default: the previous and the latest); warns `UNKNOWN / INCOMPLETE` on stderr for kinds whose dataset failed in either one. |
+| `flurry diff [<from> <to>] [-f table\|json\|csv]` | Lists the users, roles, warehouses and grants added or removed between two snapshots (default: the latest and the previous one of the same account and active role); warns on stderr when the two differ in account or active role, and `UNKNOWN / INCOMPLETE` for kinds whose dataset failed in either one. |
 | `flurry connection test [-p <profile>]` | Prints the account fingerprint, user, role and warehouse of a login. |
 | `flurry refresh user\|role\|warehouse <name> \| --all [-p <profile>]` | Re-reads one entity (or, with `--all`, every entity of the latest snapshot) and its grants with targeted `SHOW` commands into the latest snapshot. |
 | `flurry access <user> <warehouse> [--privilege <privilege>] [-f table\|json\|csv]` | Explains offline which role path gives the user the privilege (default `USAGE`), or says `NO ACCESS` or `UNKNOWN / INCOMPLETE`; unquoted names are upper-cased like in Snowflake. |
