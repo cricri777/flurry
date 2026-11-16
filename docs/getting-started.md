@@ -2,9 +2,18 @@
 
 The happy path: configure a default Snowflake connection, install `flurry`, sync once, then query users, roles and warehouses offline.
 
+## 0. Prerequisites
+
+Install Rust and clone the repository as described in [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup), then open a shell in the repository root.
+
 ## 1. Configure a default connection
 
-Create a `config.toml` in the [Snowflake CLI format](https://docs.snowflake.com/en/developer-guide/snowflake-cli/connecting/configure-cli); the file locations, profile selection rules and login methods are in [usage.md](usage.md#snowflake-configuration).
+Create `~/.config/snowflake/config.toml` in the [Snowflake CLI format](https://docs.snowflake.com/en/developer-guide/snowflake-cli/connecting/configure-cli) (the usual location); the other file locations, profile selection rules and login methods are in [usage.md](usage.md#snowflake-configuration).
+
+```bash
+mkdir -p ~/.config/snowflake
+$EDITOR ~/.config/snowflake/config.toml
+```
 
 ```toml
 default_connection_name = "default"
@@ -26,17 +35,25 @@ Find your account identifier in [Account identifiers](https://docs.snowflake.com
 
 ## 2. Install flurry
 
-With [Rust](https://rustup.rs) installed, run this from the repository root:
+From the repository root, install the binary into `~/.cargo/bin`:
 
 ```bash
 cargo install --path crates/flurry
 ```
 
-Make sure `~/.cargo/bin` is on your `PATH`, then check it:
+Cargo installs there, but that directory is often not on `PATH`. Add it for the current shell only:
+
+```bash
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+To make it permanent, add the same line to your shell startup file (for example `~/.bashrc` or `~/.zshrc`). Then check it:
 
 ```bash
 flurry --help
 ```
+
+Until `flurry` is on `PATH`, run it with `cargo run` as described in [CONTRIBUTING.md](../CONTRIBUTING.md#3-run-flurry).
 
 ## 3. Test the connection and sync
 
