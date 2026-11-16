@@ -132,6 +132,22 @@ enum Kind {
 enum Format {
     Table,
     Json,
+    Csv,
+}
+
+/// Joins cells into one RFC 4180 line, quoting cells that contain a comma, quote or newline.
+fn csv_line(cells: &[String]) -> String {
+    let cells: Vec<String> = cells
+        .iter()
+        .map(|c| {
+            if c.contains([',', '"', '\n', '\r']) {
+                format!("\"{}\"", c.replace('"', "\"\""))
+            } else {
+                c.clone()
+            }
+        })
+        .collect();
+    cells.join(",")
 }
 
 fn print_table(t: &Table, format: Format) {
@@ -157,6 +173,12 @@ fn print_table(t: &Table, format: Format) {
                 "{}",
                 serde_json::to_string_pretty(&rows).unwrap_or_default()
             );
+        }
+        Format::Csv => {
+            println!("{}", csv_line(&t.headers));
+            for r in &t.rows {
+                println!("{}", csv_line(r));
+            }
         }
         Format::Table => {
             let widths: Vec<usize> = (0..t.headers.len())
@@ -332,6 +354,39 @@ fn ident(name: &str) -> String {
     }
 }
 
+fn chain(p: &flurry_graph::AccessPath) -> String {
+    let roles = p.roles.join(" -> ");
+    if p.implicit {
+        format!("{roles} (implicit)")
+    } else {
+        roles
+    }
+}
+
+/// One row per path (or one row without path), each carrying the verdict and the completeness note.
+fn access_table(verdict: &str, paths: &[flurry_graph::AccessPath], note: Option<&str>) -> Table {
+    let row = |path: String, implicit: String| {
+        vec![
+            verdict.to_string(),
+            path,
+            implicit,
+            note.unwrap_or_default().to_string(),
+        ]
+    };
+    let rows = if paths.is_empty() {
+        vec![row(String::new(), String::new())]
+    } else {
+        paths
+            .iter()
+            .map(|p| row(chain(p), p.implicit.to_string()))
+            .collect()
+    };
+    let headers = ["result", "path", "implicit", "note"]
+        .map(String::from)
+        .to_vec();
+    Table { headers, rows }
+}
+
 fn access(user: &str, warehouse: &str, privilege: &str, format: Format) -> Result<(), String> {
     let (user, warehouse) = (&ident(user), &ident(warehouse));
     let store = Store::open()?;
@@ -357,15 +412,8 @@ fn access(user: &str, warehouse: &str, privilege: &str, format: Format) -> Resul
             Some(format!("not collected: {}", missing.join(", "))),
         ),
     };
-    let chain = |p: &flurry_graph::AccessPath| {
-        let roles = p.roles.join(" -> ");
-        if p.implicit {
-            format!("{roles} (implicit)")
-        } else {
-            roles
-        }
-    };
     match format {
+        Format::Csv => print_table(&access_table(verdict, paths, note.as_deref()), format),
         Format::Json => println!(
             "{}",
             serde_json::to_string_pretty(&json!({
@@ -532,11 +580,46 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::ident;
+    use super::{access_table, csv_line, ident};
+    use flurry_graph::AccessPath;
 
     #[test]
     fn ident_upper_cases_unquoted_names_only() {
         assert_eq!(ident("jane"), "JANE");
         assert_eq!(ident("\"Mixed\"\"Case\""), "Mixed\"Case");
+    }
+
+    #[test]
+    fn csv_quotes_only_when_needed() {
+        let cells = ["a".to_string(), "b,c".to_string(), "say \"hi\"".to_string()];
+        assert_eq!(csv_line(&cells), "a,\"b,c\",\"say \"\"hi\"\"\"");
+        assert_eq!(csv_line(&["x\ny".to_string()]), "\"x\ny\"");
+    }
+
+    #[test]
+    fn access_table_keeps_the_completeness_note() {
+        let t = access_table(
+            "UNKNOWN / INCOMPLETE",
+            &[],
+            Some("not collected: role_edges"),
+        );
+        assert_eq!(
+            t.rows,
+            [["UNKNOWN / INCOMPLETE", "", "", "not collected: role_edges"]]
+        );
+        let paths = [AccessPath {
+            implicit: false,
+            roles: vec!["ANALYST".into(), "DATA_READ_ONLY".into()],
+        }];
+        let t = access_table("ACCESS", &paths, Some("more paths exist"));
+        assert_eq!(
+            t.rows,
+            [[
+                "ACCESS",
+                "ANALYST -> DATA_READ_ONLY",
+                "false",
+                "more paths exist"
+            ]]
+        );
     }
 }

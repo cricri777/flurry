@@ -15,9 +15,9 @@ flurry [command]
 | `flurry status` | Shows the latest snapshot and the source, time and freshness of each dataset. |
 | `flurry connection test [-p <profile>]` | Prints the account fingerprint, user, role and warehouse of a login. |
 | `flurry refresh user\|role\|warehouse <name> \| --all [-p <profile>]` | Re-reads one entity (or, with `--all`, every entity of the latest snapshot) and its grants with targeted `SHOW` commands into the latest snapshot. |
-| `flurry access <user> <warehouse> [--privilege <privilege>] [-f table\|json]` | Explains offline which role path gives the user the privilege (default `USAGE`), or says `NO ACCESS` or `UNKNOWN / INCOMPLETE`; unquoted names are upper-cased like in Snowflake. |
-| `flurry roles inherits <role> [--inverse] [-f table\|json]` | Lists, offline, the roles a role inherits directly or transitively (or, with `--inverse`, the roles that inherit it); warns `UNKNOWN / INCOMPLETE` on stderr when role inheritance was not collected. |
-| `flurry users\|roles\|warehouses list [-s <text>] [-f table\|json]` | Lists entities from the latest snapshot, offline. |
+| `flurry access <user> <warehouse> [--privilege <privilege>] [-f table\|json\|csv]` | Explains offline which role path gives the user the privilege (default `USAGE`), or says `NO ACCESS` or `UNKNOWN / INCOMPLETE`; unquoted names are upper-cased like in Snowflake. |
+| `flurry roles inherits <role> [--inverse] [-f table\|json\|csv]` | Lists, offline, the roles a role inherits directly or transitively (or, with `--inverse`, the roles that inherit it); warns `UNKNOWN / INCOMPLETE` on stderr when role inheritance was not collected. |
+| `flurry users\|roles\|warehouses list [-s <text>] [-f table\|json\|csv]` | Lists entities from the latest snapshot, offline. |
 
 - Only `sync`, `refresh` and `connection test` contact Snowflake; everything else is local.
 - `refresh --all` gives current (not up to 120 min delayed) grants for the entities already listed, but costs a few `SHOW` per entity; entities no longer visible are skipped, and `sync` is faster and also finds new ones.
