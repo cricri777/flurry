@@ -2,30 +2,62 @@ use crate::modes::{Focus, Mode, State, Tab};
 use crossterm::style::{Attribute, Color, Stylize};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-// Colors come from the terminal's own ANSI palette, so the TUI follows whatever theme it opens in.
+#[derive(Clone, Copy, Default, clap::ValueEnum)]
+pub enum ThemeName {
+    /// The terminal's own ANSI palette.
+    #[default]
+    Terminal,
+    Latte,
+    Frappe,
+    Macchiato,
+    Mocha,
+}
+
 pub struct Theme {
     accent: Color,
     mode_fg: Color,
     muted: Color,
     select: Color,
+    modes: [Color; 3],
 }
 
 impl Theme {
+    pub fn new(name: ThemeName) -> Self {
+        let flavor = match name {
+            ThemeName::Terminal => return Self::terminal(),
+            ThemeName::Latte => catppuccin::PALETTE.latte,
+            ThemeName::Frappe => catppuccin::PALETTE.frappe,
+            ThemeName::Macchiato => catppuccin::PALETTE.macchiato,
+            ThemeName::Mocha => catppuccin::PALETTE.mocha,
+        };
+        let c = flavor.colors;
+        let rgb = |x: catppuccin::Color| Color::Rgb {
+            r: x.rgb.r,
+            g: x.rgb.g,
+            b: x.rgb.b,
+        };
+        Theme {
+            accent: rgb(c.mauve),
+            mode_fg: rgb(c.base),
+            muted: rgb(c.overlay1),
+            select: rgb(c.surface1),
+            modes: [rgb(c.green), rgb(c.yellow), rgb(c.pink)],
+        }
+    }
+
+    // Colors come from the terminal's own ANSI palette, so the TUI follows whatever theme it opens in.
     pub fn terminal() -> Self {
         Theme {
             accent: Color::Cyan,
             mode_fg: Color::Black,
             muted: Color::DarkGrey,
             select: Color::Blue,
+            modes: [Color::Green, Color::Yellow, Color::Magenta],
         }
     }
-}
 
-fn mode_color(mode: Mode) -> Color {
-    match mode {
-        Mode::Normal => Color::Green,
-        Mode::Insert => Color::Yellow,
-        Mode::Command => Color::Magenta,
+    fn mode(&self, mode: Mode) -> Color {
+        self.modes[mode as usize]
     }
 }
 
@@ -145,7 +177,7 @@ pub fn render(
     }
 
     let label = format!(" {} ", format!("{:?}", s.mode).to_uppercase());
-    let pill = label.clone().with(t.mode_fg).on(mode_color(s.mode)).bold();
+    let pill = label.clone().with(t.mode_fg).on(t.mode(s.mode)).bold();
     let prefix = match s.mode {
         Mode::Insert => "/",
         Mode::Command => ":",
@@ -181,6 +213,15 @@ pub fn render(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn named_theme_renders_truecolor_and_terminal_does_not() {
+        let items = vec!["ANALYST".to_string()];
+        let s = State::new(Tab::Roles);
+        let mocha = render(&items, &[], &s, 40, 10, &Theme::new(ThemeName::Mocha));
+        let plain = render(&items, &[], &s, 40, 10, &Theme::new(ThemeName::Terminal));
+        assert!(mocha.contains("38;2;") && !plain.contains("38;2;"));
+    }
 
     #[test]
     fn fit_pads_and_truncates() {

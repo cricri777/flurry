@@ -25,6 +25,9 @@ use store::{Entity, Store, Table};
     about = "Local-first Snowflake RBAC explorer (work in progress)"
 )]
 struct Cli {
+    /// Color theme of the TUI.
+    #[arg(long, env = "FLURRY_THEME", value_enum, default_value_t)]
+    theme: ui::ThemeName,
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
@@ -518,12 +521,12 @@ fn list(entity: Entity, a: &ListArgs) -> Result<(), String> {
     Ok(())
 }
 
-fn tui() -> Result<(), String> {
+fn tui(theme: ui::ThemeName) -> Result<(), String> {
     let store = Store::open()?;
     if store.list(Entity::Roles, "")?.rows.is_empty() {
         return Err("No roles in the local snapshot. Run `flurry sync` first.".into());
     }
-    run_tui(&store, &store.graph()?).map_err(|e| e.to_string())
+    run_tui(&store, &store.graph()?, theme).map_err(|e| e.to_string())
 }
 
 // Restores the terminal however the TUI loop exits, including on errors.
@@ -536,12 +539,16 @@ impl Drop for TermGuard {
     }
 }
 
-fn run_tui(store: &Store, graph: &flurry_graph::Graph) -> std::io::Result<()> {
+fn run_tui(
+    store: &Store,
+    graph: &flurry_graph::Graph,
+    theme: ui::ThemeName,
+) -> std::io::Result<()> {
     terminal::enable_raw_mode()?;
     let _guard = TermGuard;
     execute!(stdout(), EnterAlternateScreen, crossterm::cursor::Hide)?;
     let mut s = State::new(Tab::Roles);
-    let theme = ui::Theme::terminal();
+    let theme = ui::Theme::new(theme);
     while !s.quit {
         let entity = match s.tab {
             Tab::Users => Entity::Users,
@@ -597,8 +604,9 @@ fn run_tui(store: &Store, graph: &flurry_graph::Graph) -> std::io::Result<()> {
 
 #[tokio::main]
 async fn main() {
-    let result = match Cli::parse().cmd {
-        None => tui(),
+    let cli = Cli::parse();
+    let result = match cli.cmd {
+        None => tui(cli.theme),
         Some(Cmd::Sync(p)) => sync(&p).await,
         Some(Cmd::Refresh {
             kind,

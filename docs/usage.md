@@ -29,6 +29,7 @@ flurry [command]
 
 - `Tab`/`Shift+Tab` or `1`/`2`/`3` switch between Users, Roles and Warehouses; the right pane shows the selected object's details.
 - `j`/`k` or Down/Up move the cursor, or scroll the details when they have focus; `l`/Right/`Enter` focus the details and `h`/Left/`Esc` go back.
+- `--theme terminal|latte|frappe|macchiato|mocha` (or `FLURRY_THEME`) picks the colors; `terminal` (default) follows the terminal's palette and the others are [Catppuccin](https://catppuccin.com) flavors in truecolor.
 - `/` filters the list by name (`Esc` clears it), `:q` or `q` quits.
 
 ## Sync
