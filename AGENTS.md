@@ -5,7 +5,6 @@
 - Add or update unit tests for the feature.
 - Keep docs free of duplication: state each fact in one place and link to it from the others.
 - These gates must pass: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets`, `cargo test --workspace`.
-- A Stop hook (`.claude/hooks/run-tests.sh`) re-runs `cargo test --workspace` whenever Rust files changed.
 - Run the `flurry-verification` skill to execute the feature and confirm it works.
 - If the feature touches Snowflake connectivity or sync, also run `flurry-live-verification`; the user runs the live command.
 - If a feature cannot be verified, say so in the PR and do not claim it works.
