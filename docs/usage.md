@@ -27,8 +27,9 @@ flurry [command]
 
 ## TUI keys
 
-- `j`/`k` or Down/Up move the cursor; `q` quits.
-- `/` and `:` collect text only for now; `Esc` returns to normal mode.
+- `Tab`/`Shift+Tab` or `1`/`2`/`3` switch between Users, Roles and Warehouses; the right pane shows the selected object's details.
+- `j`/`k` or Down/Up move the cursor, or scroll the details when they have focus; `l`/Right/`Enter` focus the details and `h`/Left/`Esc` go back.
+- `/` filters the list by name (`Esc` clears it), `:q` or `q` quits.
 
 ## Sync
 

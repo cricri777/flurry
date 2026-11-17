@@ -1,5 +1,6 @@
 mod collect;
 mod config;
+mod detail;
 mod modes;
 mod session;
 mod store;
@@ -12,7 +13,7 @@ use crossterm::{
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use flurry_graph::Access;
-use modes::{Key, Mode, State, handle_key};
+use modes::{Focus, Key, State, Tab, handle_key};
 use serde_json::{Value, json};
 use session::Session;
 use std::io::{Write, stdout};
@@ -518,16 +519,11 @@ fn list(entity: Entity, a: &ListArgs) -> Result<(), String> {
 }
 
 fn tui() -> Result<(), String> {
-    let items: Vec<String> = Store::open()?
-        .list(Entity::Roles, "")?
-        .rows
-        .into_iter()
-        .map(|mut r| r.swap_remove(0))
-        .collect();
-    if items.is_empty() {
+    let store = Store::open()?;
+    if store.list(Entity::Roles, "")?.rows.is_empty() {
         return Err("No roles in the local snapshot. Run `flurry sync` first.".into());
     }
-    run_tui(&items).map_err(|e| e.to_string())
+    run_tui(&store, &store.graph()?).map_err(|e| e.to_string())
 }
 
 // Restores the terminal however the TUI loop exits, including on errors.
@@ -540,19 +536,32 @@ impl Drop for TermGuard {
     }
 }
 
-fn run_tui(items: &[String]) -> std::io::Result<()> {
+fn run_tui(store: &Store, graph: &flurry_graph::Graph) -> std::io::Result<()> {
     terminal::enable_raw_mode()?;
     let _guard = TermGuard;
     execute!(stdout(), EnterAlternateScreen, crossterm::cursor::Hide)?;
-    let mut s = State {
-        mode: Mode::Normal,
-        cursor: 0,
-        buffer: String::new(),
-    };
+    let mut s = State::new(Tab::Roles);
     let theme = ui::Theme::terminal();
-    loop {
+    while !s.quit {
+        let entity = match s.tab {
+            Tab::Users => Entity::Users,
+            Tab::Roles => Entity::Roles,
+            Tab::Warehouses => Entity::Warehouses,
+        };
+        let table = store
+            .list(entity, &s.filter)
+            .map_err(std::io::Error::other)?;
+        let items: Vec<String> = table.rows.iter().map(|r| r[0].clone()).collect();
+        let cursor = s.cursor().min(items.len().saturating_sub(1));
+        s.cursors[s.tab.index()] = cursor;
+        let detail = match table.rows.get(cursor) {
+            Some(row) => {
+                detail::lines(store, graph, entity, &table, row).map_err(std::io::Error::other)?
+            }
+            None => Vec::new(),
+        };
         let (w, h) = terminal::size()?;
-        let out = ui::render(items, &s, w as usize, h as usize, &theme);
+        let out = ui::render(&items, &detail, &s, w as usize, h as usize, &theme);
         execute!(
             stdout(),
             crossterm::cursor::MoveTo(0, 0),
@@ -564,16 +573,24 @@ fn run_tui(items: &[String]) -> std::io::Result<()> {
             continue;
         };
         let key = match k.code {
-            KeyCode::Char('q') if s.mode == Mode::Normal => break,
             KeyCode::Char(c) => Key::Char(c),
             KeyCode::Up => Key::Up,
             KeyCode::Down => Key::Down,
+            KeyCode::Left => Key::Left,
+            KeyCode::Right => Key::Right,
+            KeyCode::Tab => Key::Tab,
+            KeyCode::BackTab => Key::BackTab,
             KeyCode::Esc => Key::Esc,
             KeyCode::Enter => Key::Enter,
             KeyCode::Backspace => Key::Backspace,
             _ => continue,
         };
-        s = handle_key(s, key, items.len());
+        let size = if s.focus == Focus::Detail {
+            detail.len()
+        } else {
+            items.len()
+        };
+        s = handle_key(s, key, size);
     }
     Ok(())
 }
