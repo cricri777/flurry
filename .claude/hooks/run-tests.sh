@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Stop hook: runs the workspace tests when Rust files differ from main (committed or not), and hands failures back to Claude.
-cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
+cd "$(git rev-parse --show-toplevel)" || exit 0
 # A hook-triggered retry must not loop forever.
 grep -q '"stop_hook_active": *true' && exit 0
 base=$(git merge-base HEAD origin/main 2>/dev/null || echo HEAD)
