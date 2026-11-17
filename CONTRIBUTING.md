@@ -1,176 +1,100 @@
 # Contributing to Flurry
 
-Thanks for your interest in contributing to Flurry. Flurry is an early-stage, local-first Snowflake RBAC explorer built in Rust. Contributions should improve correctness, usability, security, or performance without compromising the project's read-only and privacy-first principles.
+Flurry is an early-stage, local-first Snowflake RBAC explorer built in Rust. Contributions should improve correctness, usability, security or performance without compromising its read-only, privacy-first principles.
 
 ## Before you start
 
-- Read the [README](README.md) for the product scope, architecture, Snowflake metadata semantics, and keyboard interaction requirements.
-- Read the [Roadmap](ROADMAP.md) before starting a substantial feature. Milestones should be completed in order unless maintainers agree otherwise.
-- For a large change, open an issue or discussion first to agree on scope and avoid duplicated work.
-- Do not use real employer, customer, or production Snowflake metadata in issues, pull requests, screenshots, tests, or examples.
-
-## Development status
-
-Flurry is in Milestone 1: the `flurry` crate can sync a metadata snapshot into SQLite and list it locally; the rest of the README describes the target design.
+- Read the [README](README.md) for scope and Snowflake semantics, and the [Roadmap](ROADMAP.md) before a substantial feature.
+- Open an issue or discussion first for a large change.
+- Never use real employer, customer or production Snowflake metadata in issues, pull requests, screenshots, tests or examples.
 
 ## Development setup
 
-### 1. Install Rust
-
-Install the toolchain with [rustup](https://rustup.rs) (Arch: `sudo pacman -S rustup && rustup default stable`), then check it:
-
 ```bash
-cargo --version
-cargo fmt --version
-cargo clippy --version
-```
-
-If `fmt` or `clippy` are missing, run `rustup component add rustfmt clippy`.
-
-### 2. Get the code and build
-
-```bash
+rustup component add rustfmt clippy   # only if missing; install rustup from https://rustup.rs
 git clone <repo-url> flurry && cd flurry
-cargo build --workspace
+cargo build --workspace              # first build takes a couple of minutes
+cargo run -p flurry -- <args>        # see docs/getting-started.md
 ```
 
-The first build downloads and compiles about 270 crates and takes a couple of minutes; later builds are incremental.
-
-### 3. Run flurry
-
-Use `cargo run -p flurry -- <args>` from the repository root; setup and the first commands are in [docs/getting-started.md](docs/getting-started.md).
-
-### 4. Daily commands
+Quality gates, all of which must pass before a commit:
 
 ```bash
-cargo fmt --all                                   # format
-cargo clippy --workspace --all-targets            # lint; fix all warnings
-cargo test --workspace                            # run tests
+cargo fmt --all --check
+cargo clippy --workspace --all-targets
+cargo test --workspace
 ```
 
-### Rust tips for newcomers
-
-- Read [The Rust Book](https://doc.rust-lang.org/book/) chapters 1-10 first; ownership and borrowing (ch. 4) matter most here.
-- `cargo check` is much faster than `cargo build` while iterating.
-- Read compiler errors top to bottom; they usually include the fix.
-- Avoid `unwrap()` outside tests; return `Result` and use `?`.
-- Avoid `unsafe`.
-- Add a dependency only when std can't do the job, with `cargo add <crate>` in the crate that needs it.
+New to Rust? Read [The Rust Book](https://doc.rust-lang.org/book/) chapters 1-10, use `cargo check` while iterating, and add a dependency (`cargo add`) only when std can't do the job.
 
 ## Architecture boundaries
 
-Each responsibility lives in its own crate under `crates/` (planned crates in italics are not created yet):
+Each responsibility gets its own crate under `crates/`; italic crates are planned.
 
-- `flurry-graph`: pure graph construction, traversals, path explanations, cycle handling, and deduplication; no I/O, storage, or Snowflake imports.
+- `flurry-graph`: pure graph construction and traversal; no I/O, storage or Snowflake imports.
 - *`flurry-domain`*: typed entities and RBAC semantics.
-- *`flurry-snowflake`*: `snowflake-api` adapter, SQL statements, identifier quoting, result normalization.
-- *`flurry-storage`*: SQLite migrations and repositories; never store credentials or tokens.
-- *`flurry-sync`*: collection plans, progress, freshness/coverage metadata, atomic snapshot lifecycle.
-- *`flurry-cli`* / *`flurry-tui`*: output formatting and terminal UI; they call application services and never query Snowflake directly.
-- `flurry`: the CLI, Snowflake session, collector and SQLite store.
+- *`flurry-snowflake`*: driver adapter, SQL, identifier quoting, result normalization.
+- *`flurry-storage`*: SQLite migrations and repositories.
+- *`flurry-sync`*: collection plans, progress, freshness and atomic snapshots.
+- *`flurry-cli`* / *`flurry-tui`*: output and UI; they call shared services and never query Snowflake directly.
+- `flurry`: the current CLI, Snowflake session, collector and SQLite store.
 
-The CLI and TUI must share the same services and local data model. Keep the graph engine testable with in-memory synthetic fixtures.
+## Invariants
 
-## Product and security invariants
+Every contribution must preserve these; discuss first if a change could weaken one.
 
-Every contribution must preserve these requirements:
-
-1. **Read-only v1:** no Snowflake `GRANT`, `REVOKE`, `CREATE`, `ALTER`, `DROP`, or other mutation operations.
-2. **Explicit network access:** local queries and TUI navigation must not contact Snowflake. Only explicit sync or targeted-refresh actions may connect.
-3. **No telemetry by default:** do not send account metadata, queries, usage events, or diagnostics to external services.
-4. **No secrets at rest in Flurry's database:** never store passwords, private keys, OAuth tokens, or session tokens in SQLite or exported snapshots.
+1. **Read-only:** no `GRANT`, `REVOKE`, `CREATE`, `ALTER`, `DROP` or other mutation.
+2. **Explicit network access:** only sync or targeted refresh may contact Snowflake.
+3. **No telemetry:** send no metadata, queries or diagnostics externally.
+4. **No secrets at rest:** never store passwords, keys or tokens in SQLite or exports.
 5. **Least privilege:** do not require `ACCOUNTADMIN`; handle restricted visibility gracefully.
-6. **Honest completeness:** do not treat an empty or missing result as proof of no access if collection is incomplete or visibility is restricted.
-7. **Provenance:** retain source and collection timestamps, source latency, row counts, warnings, and per-dataset status.
-8. **Synthetic test data only:** no real production user names, role names, warehouse names, grants, or account identifiers in committed fixtures.
-9. **Safe SQL:** parameterize values where possible and use a dedicated safe identifier-quoting function for identifiers. Never concatenate arbitrary input into SQL.
-10. **Local protection:** treat the local database and exports as sensitive access-control metadata.
+6. **Honest completeness:** an empty result is not proof of no access when collection is incomplete.
+7. **Provenance:** keep source, timestamps, latency, row counts, warnings and per-dataset status.
+8. **Synthetic fixtures only:** no real names, grants or account identifiers.
+9. **Safe SQL:** parameterize values, quote identifiers with the dedicated function, never concatenate input.
+10. **Local protection:** treat the database and exports as sensitive.
 
-If a change could weaken any invariant, discuss it before implementation.
+## Vim-friendly TUI
 
-## Vim-friendly TUI requirements
+Vim-style navigation is a supported interaction model and is enabled by default.
 
-Vim-style navigation is part of Flurry's product identity and must be treated as a supported interaction model.
-
-- Vim mode is enabled by default.
-- Keep conventional arrow keys, `Tab`, and `Shift+Tab` available.
-- Support clear Normal, Insert, Visual/selection, and command-line modes.
-- In Normal mode, `j`/`k` navigate lists; `h`/`l` move between panes or collapse/expand a tree; `gg`/`G` move to the start/end of a list; `Ctrl-d`/`Ctrl-u` page; `/` searches; `n`/`N` move between matches; `:` opens command-line mode; `?` opens help; `Esc` returns to Normal mode or dismisses the topmost transient view.
-- `r` refreshes from the local cache only. `R` explicitly starts a Snowflake sync.
-- `q` navigates back or quits only when no text input, modal, or child view is active. `:q` and `:quit` provide explicit quit commands.
-- Do not intercept navigation keys while an input has focus. Insert-mode text editing must behave normally.
-- Show the current mode and context-sensitive shortcuts in the status line/help.
-- Keep all essential operations possible without a mouse.
-- Add tests for mode changes, focus transitions, key dispatch, search behavior, list navigation, and command execution.
-
-Do not add one-off key handlers directly to individual screens if the behavior belongs in a shared keybinding or navigation layer. Keep the bindings internally consistent and design the layer so configurable mappings can be added later.
+- Keep arrow keys, `Tab` and `Shift+Tab` working, and keep everything possible without a mouse.
+- Support Normal, Insert, Visual and command-line modes, and show the mode and shortcuts in the status line.
+- Normal mode: `j`/`k` move, `h`/`l` switch panes or collapse/expand, `gg`/`G` jump, `Ctrl-d`/`Ctrl-u` page, `/` search, `n`/`N` next/previous match, `:` command line, `?` help, `Esc` back or dismiss.
+- `r` refreshes from the local cache only; `R` explicitly starts a sync.
+- `q` goes back or quits only when no input, modal or child view is active; `:q` and `:quit` always quit.
+- Never intercept navigation keys while an input has focus.
+- Put key handling in the shared navigation layer, not in one-off screen handlers, so mappings can become configurable.
 
 ## Coding guidelines
 
-- Run `cargo fmt` and `cargo clippy` with zero warnings before every commit.
-- Prefer small, cohesive modules and pure functions for normalization and graph operations.
-- Use typed errors and `Result`; avoid `unwrap()`/`expect()` outside tests.
-- Keep `unsafe` out of the code except the documented SQLite FFI boundary.
-- Keep Snowflake-specific raw field names at the connector/normalization boundary; use consistent domain names internally.
-- Do not swallow errors. Return typed errors with safe, useful context.
-- Redact credentials and tokens from all logs and error messages.
-- Avoid logging full raw metadata rows because user and role names are sensitive.
-- Use stable, deterministic output ordering for tests and CLI reports.
-- Make behavior explicit when data is stale, delayed, unsupported, or incomplete.
-- Document assumptions about Snowflake semantics with links to official documentation.
+- Prefer small modules and pure functions for normalization and graph operations.
+- Use typed errors and `Result`; avoid `unwrap()`/`expect()` outside tests and keep `unsafe` out except the documented SQLite FFI boundary.
+- Do not swallow errors, and redact credentials and tokens from logs and errors.
+- Never log raw metadata rows; user and role names are sensitive.
+- Keep raw Snowflake field names at the connector boundary and use domain names internally.
+- Keep output ordering deterministic, and make stale, delayed or incomplete data explicit.
+- Cite the official Snowflake documentation for any semantic assumption.
 
-## Testing expectations
+## Testing
 
-Add or update tests for every behavior change; in Rust, put unit tests in a `#[cfg(test)] mod tests` next to the code and integration tests in the crate's `tests/` directory, then run `cargo test --workspace`.
+Add or update tests for every behavior change: unit tests in a `#[cfg(test)] mod tests` next to the code, integration tests in the crate's `tests/`. Priorities and the required scenarios are in the [Roadmap](ROADMAP.md#testing-strategy).
 
-### Unit tests
+- Integration tests need a dedicated non-production Snowflake account and explicit opt-in such as `FLURRY_INTEGRATION_TESTS=1`.
+- Fixtures are synthetic and fictional, including large ones (about 10k users and roles, 100k+ edges) for performance.
 
-Prioritize tests for:
+## Pull requests
 
-- Snowflake result normalization.
-- Role grant direction and inherited privilege traversal.
-- Direct versus inherited user-role assignments.
-- `PUBLIC` as an implicit role.
-- Multiple paths, cycles, and duplicate edges.
-- Warehouse privilege distinctions (`USAGE`, `MONITOR`, `OPERATE`, `MODIFY`, `OWNERSHIP`).
-- Incomplete data and `UNKNOWN / INCOMPLETE` behavior.
-- Snapshot atomicity, rollback, and diffing.
-- Case-insensitive search and identifier handling.
-- Vim mode state, focus ownership, key dispatch, and command parsing.
+- [ ] One concern per PR, in line with the current milestone.
+- [ ] The three quality gates pass and new logic has tests, including incomplete and error cases.
+- [ ] CLI and TUI share one service, and local navigation never queries Snowflake.
+- [ ] No secrets, customer data or real metadata; docs and examples are updated.
+- [ ] The description covers the problem, design, behavior change, testing, limitations, and security and privacy impact.
 
-### Integration tests
+## Security issues
 
-- Use a dedicated non-production Snowflake test account only.
-- Require explicit opt-in, such as `FLURRY_INTEGRATION_TESTS=1`.
-- Never run against a production account by default.
-- Do not commit credentials or real metadata.
-- Use a test role with intentionally limited visibility to validate partial-collection behavior.
-
-### Synthetic fixtures
-
-Use generated or hand-written synthetic data. Include large fixtures (for example, 10k users, 10k roles, and 100k+ edges) for performance tests. Ensure names are fictional and do not resemble customer production identifiers.
-
-## Pull request checklist
-
-Before opening a pull request:
-
-- [ ] The change is scoped to one concern and follows the current roadmap milestone.
-- [ ] `cargo fmt --check`, `cargo clippy --workspace --all-targets`, and `cargo test --workspace` pass.
-- [ ] New logic has unit tests, including incomplete/error cases where relevant.
-- [ ] CLI and TUI use the same application service rather than duplicating logic.
-- [ ] Local navigation does not unexpectedly trigger Snowflake queries.
-- [ ] Vim and arrow-key interactions remain consistent.
-- [ ] No secrets, customer data, or real account metadata are included.
-- [ ] Documentation and examples are updated.
-- [ ] Any new Snowflake assumptions cite the official documentation.
-- [ ] Security and privacy implications are described in the pull request.
-
-Use a clear pull request description: explain the problem, the design, the behavior changed, how it was tested, and any known limitations.
-
-## Reporting security issues
-
-Do not report suspected vulnerabilities in public issues. Contact the repository maintainers privately using the security contact configured in the repository (for example, GitHub's private vulnerability reporting, if enabled). Do not include real customer Snowflake metadata in a report unless explicitly authorized and necessary.
+Do not report vulnerabilities in public issues; use the repository's private security contact (for example GitHub private vulnerability reporting) and include no real customer metadata.
 
 ## License
 
-By contributing, you agree that your contributions are submitted under the project's [MIT License](LICENSE.md). If a future contribution agreement or policy is introduced, it must be documented clearly before it applies.
+Contributions are submitted under the project's [MIT License](LICENSE.md).
