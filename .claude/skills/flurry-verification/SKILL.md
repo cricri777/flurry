@@ -43,7 +43,7 @@ python3 .claude/skills/flurry-verification/tui.py target/debug/flurry           
 python3 .claude/skills/flurry-verification/tui.py target/debug/flurry j j        # move down twice
 ```
 
-Keys: `j`/`k` move, `/` search, `:` command, `Esc` normal mode, `q` quit. Use the same exported `XDG_*` variables as above.
+Keys: `j`/`k` move, `Tab` and `1`-`3` switch tabs, `l`/`h` focus detail or list, `/` search, `:` command, `Esc` normal mode, `q` quit. Use the same exported `XDG_*` variables as above.
 
 ## Test config handling
 

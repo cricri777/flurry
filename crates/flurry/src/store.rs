@@ -167,7 +167,7 @@ impl Store {
     }
 
     #[cfg(test)]
-    fn in_memory() -> Self {
+    pub fn in_memory() -> Self {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(SCHEMA).unwrap();
         Self(conn)
@@ -289,6 +289,46 @@ impl Store {
             .replace('%', "\\%")
             .replace('_', "\\_");
         self.table(&sql, &[&format!("%{pattern}%")])
+    }
+
+    /// Directly related names of one entity in the latest snapshot, as (label, values) sections.
+    pub fn related(
+        &self,
+        entity: Entity,
+        name: &str,
+    ) -> Result<Vec<(&'static str, Vec<String>)>, String> {
+        let latest = "snapshot_id = (SELECT MAX(id) FROM snapshots)";
+        let queries: &[(&str, &str)] = match entity {
+            Entity::Users => &[(
+                "roles",
+                "SELECT role_name FROM user_roles WHERE user_name = ?",
+            )],
+            Entity::Roles => &[
+                (
+                    "users",
+                    "SELECT user_name FROM user_roles WHERE role_name = ?",
+                ),
+                (
+                    "warehouse privileges",
+                    "SELECT privilege || ' on ' || warehouse FROM warehouse_privileges WHERE role_name = ?",
+                ),
+            ],
+            Entity::Warehouses => &[(
+                "granted to",
+                "SELECT privilege || ' to ' || role_name FROM warehouse_privileges WHERE warehouse = ?",
+            )],
+        };
+        queries
+            .iter()
+            .map(|(label, sql)| {
+                let sql = format!("{sql} AND {latest} ORDER BY 1");
+                let rows = self.table(&sql, &[&name])?.rows;
+                Ok((
+                    *label,
+                    rows.into_iter().map(|mut r| r.swap_remove(0)).collect(),
+                ))
+            })
+            .collect()
     }
 
     /// Builds the RBAC graph of the latest snapshot, flagging failed datasets as incomplete.
