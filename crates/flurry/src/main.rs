@@ -25,9 +25,9 @@ use store::{Entity, Store, Table};
     about = "Local-first Snowflake RBAC explorer (work in progress)"
 )]
 struct Cli {
-    /// Color theme of the TUI.
-    #[arg(long, env = "FLURRY_THEME", value_enum, default_value_t)]
-    theme: ui::ThemeName,
+    /// Color theme of the TUI [default: `theme` in the config file, else terminal].
+    #[arg(long, env = "FLURRY_THEME", value_enum)]
+    theme: Option<ui::ThemeName>,
     #[command(subcommand)]
     cmd: Option<Cmd>,
 }
@@ -521,6 +521,20 @@ fn list(entity: Entity, a: &ListArgs) -> Result<(), String> {
     Ok(())
 }
 
+// The flag or env var wins over the config file.
+fn theme(flag: Option<ui::ThemeName>) -> Result<ui::ThemeName, String> {
+    if let Some(t) = flag {
+        return Ok(t);
+    }
+    let Some(path) = config::settings_path() else {
+        return Ok(ui::ThemeName::default());
+    };
+    match config::setting(&path, "theme")? {
+        None => Ok(ui::ThemeName::default()),
+        Some(n) => ui::ThemeName::from_str(&n, true).map_err(|e| format!("{path:?}: theme: {e}")),
+    }
+}
+
 fn tui(theme: ui::ThemeName) -> Result<(), String> {
     let store = Store::open()?;
     if store.list(Entity::Roles, "")?.rows.is_empty() {
@@ -606,7 +620,7 @@ fn run_tui(
 async fn main() {
     let cli = Cli::parse();
     let result = match cli.cmd {
-        None => tui(cli.theme),
+        None => theme(cli.theme).and_then(tui),
         Some(Cmd::Sync(p)) => sync(&p).await,
         Some(Cmd::Refresh {
             kind,
