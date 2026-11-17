@@ -29,6 +29,7 @@ flurry [command]
 
 - `Tab`/`Shift+Tab` or `1`/`2`/`3` switch between Users, Roles and Warehouses; the right pane shows the selected object's details.
 - `j`/`k` or Down/Up move the cursor, or scroll the details when they have focus; `l`/Right/`Enter` focus the details and `h`/Left/`Esc` go back.
+- `--theme terminal|latte|frappe|macchiato|mocha` (or `FLURRY_THEME`, or `theme` in the [config file](#flurry-configuration)) picks the colors; `terminal` (default) follows the terminal's palette and the others are [Catppuccin](https://catppuccin.com) flavors in truecolor.
 - `/` filters the list by name (`Esc` clears it), `:q` or `q` quits.
 
 ## Sync
@@ -46,6 +47,14 @@ flurry [command]
 |---|---|
 | `~/.local/share/flurry/flurry.db` | Snapshots (`$XDG_DATA_HOME` is honored); contains account metadata, so keep it private. |
 | `~/.cache/flurry/session-*.json` | Reusable session tokens (`$XDG_CACHE_HOME` is honored). |
+
+## Flurry configuration
+
+Flurry's own settings live in `~/.config/flurry/config.toml` (`$XDG_CONFIG_HOME` is honored); the file is optional and command-line flags and environment variables override it.
+
+```toml
+theme = "mocha"
+```
 
 ## Snowflake configuration
 

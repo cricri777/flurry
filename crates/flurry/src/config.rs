@@ -105,6 +105,29 @@ pub fn data_dir() -> Option<PathBuf> {
     Some(base.join("flurry"))
 }
 
+/// Path of flurry's own settings file.
+pub fn settings_path() -> Option<PathBuf> {
+    let base = env::var("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .or_else(|_| env::var("HOME").map(|h| PathBuf::from(h).join(".config")))
+        .ok()?;
+    Some(base.join("flurry/config.toml"))
+}
+
+/// Reads a string setting; a missing file or key gives `None`.
+pub fn setting(path: &std::path::Path, key: &str) -> Result<Option<String>, String> {
+    let Some(table) = read(path.into())? else {
+        return Ok(None);
+    };
+    match table.get(key) {
+        None => Ok(None),
+        Some(v) => v
+            .as_str()
+            .map(|s| Some(s.to_string()))
+            .ok_or(format!("{path:?}: `{key}` must be a string")),
+    }
+}
+
 /// Best-effort write of a 0600 file inside a 0700 directory.
 pub fn write_private(path: &std::path::Path, bytes: &[u8]) {
     use std::io::Write;
@@ -226,6 +249,16 @@ mod tests {
     fn invalid_toml_is_an_error() {
         let d = dir("invalid", &[("config.toml", "[connections")]);
         assert!(resolve(&d, None, &[]).is_err());
+    }
+
+    #[test]
+    fn reads_string_settings() {
+        let d = dir("settings", &[("config.toml", "theme = \"mocha\"\nn = 1\n")]);
+        let path = d.join("config.toml");
+        assert_eq!(setting(&path, "theme").unwrap().as_deref(), Some("mocha"));
+        assert_eq!(setting(&path, "other").unwrap(), None);
+        assert!(setting(&path, "n").is_err());
+        assert_eq!(setting(&d.join("missing.toml"), "theme").unwrap(), None);
     }
 
     #[test]
