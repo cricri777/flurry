@@ -292,41 +292,46 @@ impl Store {
     }
 
     /// Directly related names of one entity in the latest snapshot, as (label, values) sections.
-    pub fn related(
-        &self,
-        entity: Entity,
-        name: &str,
-    ) -> Result<Vec<(&'static str, Vec<String>)>, String> {
+    pub fn related(&self, entity: Entity, name: &str) -> Result<Vec<Related>, String> {
         let latest = "snapshot_id = (SELECT MAX(id) FROM snapshots)";
-        let queries: &[(&str, &str)] = match entity {
+        let queries: &[(&str, Entity, &str)] = match entity {
             Entity::Users => &[(
                 "roles",
-                "SELECT role_name FROM user_roles WHERE user_name = ?",
+                Entity::Roles,
+                "SELECT role_name, role_name FROM user_roles WHERE user_name = ?",
             )],
             Entity::Roles => &[
                 (
                     "users",
-                    "SELECT user_name FROM user_roles WHERE role_name = ?",
+                    Entity::Users,
+                    "SELECT user_name, user_name FROM user_roles WHERE role_name = ?",
                 ),
                 (
                     "warehouse privileges",
-                    "SELECT privilege || ' on ' || warehouse FROM warehouse_privileges WHERE role_name = ?",
+                    Entity::Warehouses,
+                    "SELECT privilege || ' on ' || warehouse, warehouse FROM warehouse_privileges WHERE role_name = ?",
                 ),
             ],
             Entity::Warehouses => &[(
                 "granted to",
-                "SELECT privilege || ' to ' || role_name FROM warehouse_privileges WHERE warehouse = ?",
+                Entity::Roles,
+                "SELECT privilege || ' to ' || role_name, role_name FROM warehouse_privileges WHERE warehouse = ?",
             )],
         };
         queries
             .iter()
-            .map(|(label, sql)| {
+            .map(|&(label, target, sql)| {
                 let sql = format!("{sql} AND {latest} ORDER BY 1");
                 let rows = self.table(&sql, &[&name])?.rows;
-                Ok((
-                    *label,
-                    rows.into_iter().map(|mut r| r.swap_remove(0)).collect(),
-                ))
+                let items = rows
+                    .into_iter()
+                    .map(|mut r| (r.swap_remove(0), r.swap_remove(0)))
+                    .collect();
+                Ok(Related {
+                    label,
+                    target,
+                    items,
+                })
             })
             .collect()
     }
@@ -479,6 +484,13 @@ pub enum Entity {
     Users,
     Roles,
     Warehouses,
+}
+
+/// A detail section: its label, the kind of entity it points to, and (displayed text, target name) pairs.
+pub struct Related {
+    pub label: &'static str,
+    pub target: Entity,
+    pub items: Vec<(String, String)>,
 }
 
 #[cfg(test)]

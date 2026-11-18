@@ -26,6 +26,22 @@ pub enum Focus {
     Detail,
 }
 
+/// A related entity the detail pane can open.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Link {
+    pub tab: Tab,
+    pub name: String,
+}
+
+// Where the user was before following a link.
+#[derive(Clone, Debug)]
+struct View {
+    tab: Tab,
+    cursor: usize,
+    filter: String,
+    scroll: usize,
+}
+
 #[derive(Clone, Debug)]
 pub struct State {
     pub mode: Mode,
@@ -33,10 +49,16 @@ pub struct State {
     pub focus: Focus,
     /// List cursor of each tab, indexed by `Tab::index`.
     pub cursors: [usize; 3],
+    /// Selected detail line.
     pub scroll: usize,
     pub buffer: String,
     /// Name search applied to the active list.
     pub filter: String,
+    /// Entity a followed link opens; the caller resolves it with `resolve`.
+    pub goto: Option<String>,
+    /// One-shot message for the status line.
+    pub notice: Option<String>,
+    history: Vec<View>,
     pub quit: bool,
 }
 
@@ -50,6 +72,9 @@ impl State {
             scroll: 0,
             buffer: String::new(),
             filter: String::new(),
+            goto: None,
+            notice: None,
+            history: Vec::new(),
             quit: false,
         }
     }
@@ -63,6 +88,40 @@ impl State {
         self.focus = Focus::List;
         self.scroll = 0;
         self.filter.clear();
+    }
+
+    fn follow(&mut self, link: &Link) {
+        self.history.push(View {
+            tab: self.tab,
+            cursor: self.cursor(),
+            filter: self.filter.clone(),
+            scroll: self.scroll,
+        });
+        self.switch(link.tab);
+        self.focus = Focus::Detail;
+        self.goto = Some(link.name.clone());
+    }
+
+    fn back(&mut self) {
+        if let Some(v) = self.history.pop() {
+            (self.tab, self.filter, self.scroll) = (v.tab, v.filter, v.scroll);
+            self.cursors[v.tab.index()] = v.cursor;
+            self.focus = Focus::Detail;
+        }
+    }
+
+    /// Moves the cursor to the followed entity in the unfiltered `items`, or goes back if it is missing.
+    pub fn resolve(&mut self, items: &[String]) {
+        let Some(name) = self.goto.take() else {
+            return;
+        };
+        match items.iter().position(|i| *i == name) {
+            Some(i) => self.cursors[self.tab.index()] = i,
+            None => {
+                self.back();
+                self.notice = Some(format!("{name} is not in the snapshot"));
+            }
+        }
     }
 }
 
@@ -78,14 +137,18 @@ pub enum Key {
     Esc,
     Enter,
     Backspace,
+    /// `Ctrl+o`: back to where the last followed link was opened.
+    Back,
 }
 
-// Pure transition so mode behavior is testable without a terminal; `size` is the length of the focused pane.
-pub fn handle_key(mut s: State, key: Key, size: usize) -> State {
+// Pure transition so mode behavior is testable without a terminal; `size` is the length of the focused pane
+// and `link` the link of the selected detail line.
+pub fn handle_key(mut s: State, key: Key, size: usize, link: Option<&Link>) -> State {
     let last = size.saturating_sub(1);
     let i = s.tab.index();
     let next = Tab::ALL[(i + 1) % 3];
     let prev = Tab::ALL[(i + 2) % 3];
+    s.notice = None;
     match (s.mode, key) {
         (Mode::Normal, Key::Char('j') | Key::Down) => move_to(&mut s, |n| (n + 1).min(last)),
         (Mode::Normal, Key::Char('k') | Key::Up) => move_to(&mut s, |n| n.saturating_sub(1)),
@@ -96,7 +159,11 @@ pub fn handle_key(mut s: State, key: Key, size: usize) -> State {
         (Mode::Normal, Key::Tab) => s.switch(next),
         (Mode::Normal, Key::BackTab) => s.switch(prev),
         (Mode::Normal, Key::Char(c @ '1'..='3')) => s.switch(Tab::ALL[c as usize - '1' as usize]),
-        (Mode::Normal, Key::Char('l') | Key::Right | Key::Enter) => s.focus = Focus::Detail,
+        (Mode::Normal, Key::Char('l') | Key::Right | Key::Enter) => match (s.focus, link) {
+            (Focus::Detail, Some(link)) => s.follow(link),
+            _ => s.focus = Focus::Detail,
+        },
+        (Mode::Normal, Key::Backspace | Key::Back) => s.back(),
         (Mode::Normal, Key::Char('h') | Key::Left) => s.focus = Focus::List,
         (Mode::Normal, Key::Esc) if s.focus == Focus::Detail => s.focus = Focus::List,
         (Mode::Normal, Key::Esc) => {
@@ -156,7 +223,7 @@ mod tests {
     }
 
     fn press(s: State, keys: &[Key]) -> State {
-        keys.iter().fold(s, |s, k| handle_key(s, *k, 3))
+        keys.iter().fold(s, |s, k| handle_key(s, *k, 3, None))
     }
 
     #[test]
@@ -233,5 +300,52 @@ mod tests {
         assert!(s.quit);
         let s = press(start(), &[Key::Char('/'), Key::Char('q'), Key::Enter]);
         assert!(!s.quit);
+    }
+
+    #[test]
+    fn following_a_link_opens_the_entity_and_back_returns() {
+        let link = Link {
+            tab: Tab::Warehouses,
+            name: "WH_B".into(),
+        };
+        let s = press(start(), &[Key::Char('j'), Key::Char('l'), Key::Char('j')]);
+        let mut s = handle_key(s, Key::Enter, 3, Some(&link));
+        assert_eq!(
+            (s.tab, s.focus, s.goto.as_deref()),
+            (Tab::Warehouses, Focus::Detail, Some("WH_B"))
+        );
+        s.resolve(&["WH_A".into(), "WH_B".into()]);
+        assert_eq!((s.cursor(), s.scroll, s.goto.clone()), (1, 0, None));
+        let s = press(s, &[Key::Back]);
+        assert_eq!(
+            (s.tab, s.cursor(), s.scroll, s.focus),
+            (Tab::Roles, 1, 1, Focus::Detail)
+        );
+        // An empty history leaves the view as it is.
+        let s = press(s, &[Key::Backspace]);
+        assert_eq!((s.tab, s.cursor()), (Tab::Roles, 1));
+    }
+
+    #[test]
+    fn enter_without_a_link_only_focuses_the_details() {
+        let s = press(start(), &[Key::Enter, Key::Enter]);
+        assert_eq!((s.tab, s.focus, s.goto), (Tab::Roles, Focus::Detail, None));
+    }
+
+    #[test]
+    fn a_missing_target_goes_back_with_a_notice() {
+        let link = Link {
+            tab: Tab::Users,
+            name: "GHOST".into(),
+        };
+        let s = press(
+            start(),
+            &[Key::Char('/'), Key::Char('a'), Key::Enter, Key::Char('l')],
+        );
+        let mut s = handle_key(s, Key::Enter, 3, Some(&link));
+        s.resolve(&["JANE".into()]);
+        assert_eq!((s.tab, s.filter.as_str()), (Tab::Roles, "a"));
+        assert_eq!(s.notice.as_deref(), Some("GHOST is not in the snapshot"));
+        assert_eq!(press(s, &[Key::Char('j')]).notice, None);
     }
 }

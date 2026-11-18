@@ -28,7 +28,8 @@ flurry [command]
 ## TUI keys
 
 - `Tab`/`Shift+Tab` or `1`/`2`/`3` switch between Users, Roles and Warehouses; the right pane shows the selected object's details.
-- `j`/`k` or Down/Up move the cursor, or scroll the details when they have focus; `l`/Right/`Enter` focus the details and `h`/Left/`Esc` go back.
+- `j`/`k` or Down/Up move the cursor, or select a detail line when the details have focus; `l`/Right/`Enter` focus the details and `h`/Left/`Esc` go back.
+- In the details, `l`/Right/`Enter` on a related user, role or warehouse opens it, and `Ctrl+o` or `Backspace` returns to where you were.
 - `--theme terminal|latte|frappe|macchiato|mocha` (or `FLURRY_THEME`, or `theme` in the [config file](#flurry-configuration)) picks the colors; `terminal` (default) follows the terminal's palette and the others are [Catppuccin](https://catppuccin.com) flavors in truecolor.
 - `/` filters the list by name (`Esc` clears it), `:q` or `q` quits.
 
