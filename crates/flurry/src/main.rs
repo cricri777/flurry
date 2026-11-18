@@ -8,7 +8,7 @@ mod ui;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use crossterm::{
-    event::{self, Event, KeyCode},
+    event::{self, Event, KeyCode, KeyModifiers},
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
@@ -573,14 +573,20 @@ fn run_tui(
             .list(entity, &s.filter)
             .map_err(std::io::Error::other)?;
         let items: Vec<String> = table.rows.iter().map(|r| r[0].clone()).collect();
+        if s.goto.is_some() {
+            // A failed jump goes back to the previous view, which needs its own list.
+            s.resolve(&items);
+            continue;
+        }
         let cursor = s.cursor().min(items.len().saturating_sub(1));
         s.cursors[s.tab.index()] = cursor;
-        let detail = match table.rows.get(cursor) {
+        let lines = match table.rows.get(cursor) {
             Some(row) => {
                 detail::lines(store, graph, entity, &table, row).map_err(std::io::Error::other)?
             }
             None => Vec::new(),
         };
+        let detail: Vec<String> = lines.iter().map(|l| l.text.clone()).collect();
         let (w, h) = terminal::size()?;
         let out = ui::render(&items, &detail, &s, w as usize, h as usize, &theme);
         execute!(
@@ -594,6 +600,7 @@ fn run_tui(
             continue;
         };
         let key = match k.code {
+            KeyCode::Char('o') if k.modifiers.contains(KeyModifiers::CONTROL) => Key::Back,
             KeyCode::Char(c) => Key::Char(c),
             KeyCode::Up => Key::Up,
             KeyCode::Down => Key::Down,
@@ -611,7 +618,8 @@ fn run_tui(
         } else {
             items.len()
         };
-        s = handle_key(s, key, size);
+        let link = lines.get(s.scroll).and_then(|l| l.link.as_ref());
+        s = handle_key(s, key, size, link);
     }
     Ok(())
 }

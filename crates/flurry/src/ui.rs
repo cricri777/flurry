@@ -137,9 +137,18 @@ pub fn render(
         })
         .collect();
     let detail_inner = detail_w.saturating_sub(2).max(1);
-    let scroll = s.scroll.min(detail.len().saturating_sub(1));
-    let detail_body = (scroll..scroll + rows)
-        .map(|i| fit(detail.get(i).map_or("", |l| l.as_str()), detail_inner))
+    // The selected detail line is only highlighted while the details have focus.
+    let selected = s.scroll.min(detail.len().saturating_sub(1));
+    let top = selected.saturating_sub(rows - 1);
+    let detail_body = (top..top + rows)
+        .map(|i| {
+            let line = fit(detail.get(i).map_or("", |l| l.as_str()), detail_inner);
+            if s.focus == Focus::Detail && i == selected && i < detail.len() {
+                line.on(t.select).attribute(Attribute::Bold).to_string()
+            } else {
+                line
+            }
+        })
         .collect();
 
     let tab_name = |tab: Tab| format!("{tab:?}");
@@ -184,7 +193,11 @@ pub fn render(
         Mode::Normal => "",
     };
     // The status line never wraps: the hint is dropped first, then the typed text is cut from the left.
-    let hint = "Tab tabs  j/k move  l detail  / search  : command  q quit";
+    let hint = match &s.notice {
+        Some(notice) => notice.as_str(),
+        None if s.focus == Focus::Detail => "Enter open  ^O back  h list  / search  q quit",
+        None => "Tab tabs  j/k move  l detail  / search  : command  q quit",
+    };
     let place = format!(
         "{}/{}",
         if items.is_empty() { 0 } else { cursor + 1 },
@@ -274,5 +287,19 @@ mod tests {
         // A narrow terminal shows only the focused pane.
         let out = render(&items, &detail, &s, 40, 10, &Theme::terminal());
         assert!(!out.contains("SECURITYADMIN"));
+    }
+
+    #[test]
+    fn detail_selection_follows_the_cursor_and_notice_replaces_the_hint() {
+        let items = vec!["ANALYST".to_string()];
+        let detail: Vec<String> = (0..20).map(|i| format!("line {i}")).collect();
+        let mut s = State::new(Tab::Roles);
+        s.focus = Focus::Detail;
+        s.scroll = 15;
+        let out = render(&items, &detail, &s, 100, 10, &Theme::terminal());
+        assert!(out.contains("line 15") && !out.contains("line 10 "));
+        s.notice = Some("GHOST is not in the snapshot".into());
+        let out = render(&items, &detail, &s, 100, 10, &Theme::terminal());
+        assert!(status_line(&out).contains("GHOST is not in the snapshot"));
     }
 }
