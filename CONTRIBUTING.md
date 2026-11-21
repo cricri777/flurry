@@ -25,6 +25,8 @@ cargo clippy --workspace --all-targets
 cargo test --workspace
 ```
 
+`make verify` runs the gates plus an offline end-to-end check on a synthetic snapshot, and CI runs it.
+
 New to Rust? Read [The Rust Book](https://doc.rust-lang.org/book/) chapters 1-10, use `cargo check` while iterating, and add a dependency (`cargo add`) only when std can't do the job.
 
 ## Architecture boundaries

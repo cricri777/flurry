@@ -2,7 +2,7 @@
 
 This roadmap defines a deliberately incremental path from a technical proof of concept to a useful public release. Complete each milestone's exit criteria before moving on. The roadmap is a plan, not a promise about release dates.
 
-**Status:** Milestone 0 is done in Rust instead of Bun; Milestone 1 is done apart from the live check of targeted refresh and a live sync with restricted `ACCOUNT_USAGE` access, which the maintainer runs; Milestone 2 is done; Milestone 3 is in progress (tabs, detail panes, search, themes and relationship navigation are done).
+**Status:** Milestone 0 is done in Rust instead of Bun; Milestone 1 is done apart from the live check of targeted refresh and a live sync with restricted `ACCOUNT_USAGE` access, which the maintainer runs; Milestone 2 is done; Milestone 3 is in progress (tabs, detail panes, search, themes, relationship navigation and per-user warehouse access are done).
 
 ## Product principles
 

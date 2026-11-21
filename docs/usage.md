@@ -31,6 +31,7 @@ flurry [command]
 - `j`/`k` or Down/Up move the cursor, or select a detail line when the details have focus; `l`/Right/`Enter` focus the details and `h`/Left/`Esc` go back.
 - In the details, `l`/Right/`Enter` on a related user, role or warehouse opens it, and `Ctrl+o` or `Backspace` returns to where you were.
 - `--theme terminal|latte|frappe|macchiato|mocha` (or `FLURRY_THEME`, or `theme` in the [config file](#flurry-configuration)) picks the colors; `terminal` (default) follows the terminal's palette and the others are [Catppuccin](https://catppuccin.com) flavors in truecolor.
+- A user's details list `USAGE` access per warehouse (`ACCESS`, `NO ACCESS`, `UNKNOWN / INCOMPLETE`), like `flurry access`.
 - `/` filters the list by name (`Esc` clears it), `:q` or `q` quits.
 
 ## Sync
