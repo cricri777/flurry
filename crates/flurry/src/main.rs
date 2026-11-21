@@ -12,6 +12,7 @@ use crossterm::{
     execute,
     terminal::{self, EnterAlternateScreen, LeaveAlternateScreen},
 };
+use detail::chain;
 use flurry_graph::Access;
 use modes::{Focus, Key, State, Tab, handle_key};
 use serde_json::{Value, json};
@@ -400,15 +401,6 @@ fn ident(name: &str) -> String {
     match name.strip_prefix('"').and_then(|n| n.strip_suffix('"')) {
         Some(quoted) => quoted.replace("\"\"", "\""),
         None => name.to_uppercase(),
-    }
-}
-
-fn chain(p: &flurry_graph::AccessPath) -> String {
-    let roles = p.roles.join(" -> ");
-    if p.implicit {
-        format!("{roles} (implicit)")
-    } else {
-        roles
     }
 }
 
