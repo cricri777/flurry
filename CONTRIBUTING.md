@@ -85,6 +85,8 @@ Add or update tests for every behavior change: unit tests in a `#[cfg(test)] mod
 
 ## Pull requests
 
+GitHub Actions in this repository must be pinned to a full commit SHA (`gh api repos/<owner>/<repo>/commits/<tag> --jq .sha`), or the workflow fails before it starts.
+
 - [ ] One concern per PR, in line with the current milestone.
 - [ ] The three quality gates pass and new logic has tests, including incomplete and error cases.
 - [ ] CLI and TUI share one service, and local navigation never queries Snowflake.
