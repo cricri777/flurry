@@ -31,26 +31,15 @@ Find your account identifier in [Account identifiers](https://docs.snowflake.com
 
 ## 2. Install flurry
 
-Download the archive for your system from the [latest release](https://github.com/cricri777/flurry/releases/latest):
-
-| System | Archive |
-|---|---|
-| Linux and WSL Ubuntu 22.04 or newer | `flurry-<version>-x86_64-unknown-linux-gnu.tar.gz` |
-| macOS, Apple silicon | `flurry-<version>-aarch64-apple-darwin.tar.gz` |
-| macOS, Intel | `flurry-<version>-x86_64-apple-darwin.tar.gz` |
-| Windows | `flurry-<version>-x86_64-pc-windows-msvc.zip` |
-
-On Linux, WSL and macOS, verify the checksum, extract the binary and put it on `PATH`:
+Flurry supports Linux only (x86_64, including WSL Ubuntu 22.04 or newer). Download `flurry-<version>-x86_64-unknown-linux-gnu.tar.gz` and its `.sha256` from the [latest release](https://github.com/cricri777/flurry/releases/latest), then verify the checksum, extract the binary and put it on `PATH`:
 
 ```bash
-sha256sum -c flurry-*.sha256   # use shasum -a 256 -c on macOS
+sha256sum -c flurry-*.sha256
 tar xzf flurry-*.tar.gz
 mkdir -p ~/.local/bin && mv flurry ~/.local/bin/
 export PATH="$HOME/.local/bin:$PATH"   # add this line to ~/.bashrc or ~/.zshrc to keep it
 flurry --help
 ```
-
-On Windows, extract `flurry.exe` from the zip into a folder on your `PATH`.
 
 With Rust installed, you can build from source instead:
 
