@@ -70,6 +70,8 @@ flurry connection test -p test
 flurry sync --profile test
 ```
 
+You can also run `flurry` and press `R` to pick a profile and sync from the TUI (see [TUI keys](usage.md#tui-keys)).
+
 The profile only affects commands that contact Snowflake (`connection test`, `sync`, `refresh`); `status` and the `list` commands read the latest local snapshot, whichever profile created it.
 
 ## 4. Query users, roles and warehouses

@@ -33,6 +33,12 @@ pub struct Link {
     pub name: String,
 }
 
+#[derive(Clone, PartialEq, Debug)]
+pub struct Picker {
+    pub profiles: Vec<String>,
+    pub cursor: usize,
+}
+
 // Where the user was before following a link.
 #[derive(Clone, Debug)]
 struct View {
@@ -58,6 +64,8 @@ pub struct State {
     pub goto: Option<String>,
     /// One-shot message for the status line.
     pub notice: Option<String>,
+    pub picker: Option<Picker>,
+    pub sync: Option<String>,
     history: Vec<View>,
     pub quit: bool,
 }
@@ -74,6 +82,8 @@ impl State {
             filter: String::new(),
             goto: None,
             notice: None,
+            picker: None,
+            sync: None,
             history: Vec::new(),
             quit: false,
         }
@@ -149,6 +159,20 @@ pub fn handle_key(mut s: State, key: Key, size: usize, link: Option<&Link>) -> S
     let next = Tab::ALL[(i + 1) % 3];
     let prev = Tab::ALL[(i + 2) % 3];
     s.notice = None;
+    if let Some(picker) = s.picker.as_mut() {
+        let last = picker.profiles.len().saturating_sub(1);
+        match key {
+            Key::Char('j') | Key::Down => picker.cursor = (picker.cursor + 1).min(last),
+            Key::Char('k') | Key::Up => picker.cursor = picker.cursor.saturating_sub(1),
+            Key::Enter => {
+                s.sync = picker.profiles.get(picker.cursor).cloned();
+                s.picker = None;
+            }
+            Key::Esc => s.picker = None,
+            _ => {}
+        }
+        return s;
+    }
     match (s.mode, key) {
         (Mode::Normal, Key::Char('j') | Key::Down) => move_to(&mut s, |n| (n + 1).min(last)),
         (Mode::Normal, Key::Char('k') | Key::Up) => move_to(&mut s, |n| n.saturating_sub(1)),
@@ -324,6 +348,32 @@ mod tests {
         // An empty history leaves the view as it is.
         let s = press(s, &[Key::Backspace]);
         assert_eq!((s.tab, s.cursor()), (Tab::Roles, 1));
+    }
+
+    fn with_picker(cursor: usize) -> State {
+        let mut s = start();
+        s.picker = Some(Picker {
+            profiles: vec!["dev".into(), "prod".into()],
+            cursor,
+        });
+        s
+    }
+
+    #[test]
+    fn picker_moves_within_bounds_and_enter_chooses_the_profile() {
+        let s = press(
+            with_picker(0),
+            &[Key::Char('k'), Key::Char('j'), Key::Down, Key::Enter],
+        );
+        assert_eq!((s.sync.as_deref(), s.picker), (Some("prod"), None));
+    }
+
+    #[test]
+    fn picker_swallows_other_keys_and_esc_cancels() {
+        let s = press(with_picker(0), &[Key::Char('q'), Key::Tab, Key::Char('/')]);
+        assert!(!s.quit && s.picker.is_some() && s.mode == Mode::Normal);
+        let s = press(s, &[Key::Esc]);
+        assert!(s.picker.is_none() && s.sync.is_none());
     }
 
     #[test]

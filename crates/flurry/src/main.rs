@@ -14,7 +14,7 @@ use crossterm::{
 };
 use detail::chain;
 use flurry_graph::Access;
-use modes::{Focus, Key, State, Tab, handle_key};
+use modes::{Focus, Key, Mode, Picker, State, Tab, handle_key};
 use serde_json::{Value, json};
 use session::Session;
 use std::io::{Write, stdout};
@@ -227,14 +227,22 @@ fn print_table(t: &Table, format: Format) {
     }
 }
 
-async fn connect(p: &Profile) -> Result<Session, String> {
-    Session::connect(&config::load(p.profile.as_deref())?).await
+async fn connect(profile: Option<&str>) -> Result<Session, String> {
+    Session::connect(&config::load(profile)?).await
+}
+
+async fn collect_and_save(
+    store: &mut Store,
+    profile: Option<&str>,
+) -> Result<(i64, collect::Snapshot), String> {
+    let session = connect(profile).await?;
+    let snap = collect::collect(&session, |what| eprintln!("Collecting {what}...")).await?;
+    let id = store.save(profile.unwrap_or("default"), &snap)?;
+    Ok((id, snap))
 }
 
 async fn sync(p: &Profile) -> Result<(), String> {
-    let session = connect(p).await?;
-    let snap = collect::collect(&session, |what| eprintln!("Collecting {what}...")).await?;
-    let id = Store::open()?.save(p.profile.as_deref().unwrap_or("default"), &snap)?;
+    let (id, snap) = collect_and_save(&mut Store::open()?, p.profile.as_deref()).await?;
     println!(
         "Snapshot {id} saved (account {}, role {})",
         snap.fingerprint, snap.active_role
@@ -271,7 +279,7 @@ async fn refresh(kind: Option<Kind>, name: Option<String>, p: &Profile) -> Resul
             all
         }
     };
-    let session = connect(p).await?;
+    let session = connect(p.profile.as_deref()).await?;
     let (mut totals, mut skipped): (Vec<collect::Dataset>, usize) = (Vec::new(), 0);
     for (entity, name) in &targets {
         let mut snap = match collect::refresh(&session, *entity, name).await {
@@ -384,7 +392,7 @@ fn diff(ids: Option<(i64, i64)>, format: Format) -> Result<(), String> {
 }
 
 async fn connection_test(p: &Profile) -> Result<(), String> {
-    let session = connect(p).await?;
+    let session = connect(p.profile.as_deref()).await?;
     let id = session.query(collect::IDENTITY_SQL).await?;
     println!("{:<12} {}", "fingerprint", collect::fingerprint(&id));
     let r = session
@@ -527,12 +535,30 @@ fn theme(flag: Option<ui::ThemeName>) -> Result<ui::ThemeName, String> {
     }
 }
 
-fn tui(theme: ui::ThemeName) -> Result<(), String> {
-    let store = Store::open()?;
-    if store.list(Entity::Roles, "")?.rows.is_empty() {
-        return Err("No roles in the local snapshot. Run `flurry sync` first.".into());
+async fn tui(flag: Option<ui::ThemeName>) -> Result<(), String> {
+    let theme = theme(flag)?;
+    let mut store = Store::open()?;
+    let mut graph = store.graph()?;
+    let mut s = State::new(Tab::Roles);
+    if store.latest()?.is_none() {
+        s.notice = Some("No snapshot yet: press R to sync".into());
     }
-    run_tui(&store, &store.graph()?, theme).map_err(|e| e.to_string())
+    let theme = ui::Theme::new(theme);
+    enter_terminal().map_err(|e| e.to_string())?;
+    let _guard = TermGuard;
+    run_tui(&mut store, &mut graph, s, &theme)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn enter_terminal() -> std::io::Result<()> {
+    terminal::enable_raw_mode()?;
+    execute!(stdout(), EnterAlternateScreen, crossterm::cursor::Hide)
+}
+
+fn leave_terminal() {
+    let _ = execute!(stdout(), crossterm::cursor::Show, LeaveAlternateScreen);
+    let _ = terminal::disable_raw_mode();
 }
 
 // Restores the terminal however the TUI loop exits, including on errors.
@@ -540,21 +566,56 @@ struct TermGuard;
 
 impl Drop for TermGuard {
     fn drop(&mut self) {
-        let _ = execute!(stdout(), crossterm::cursor::Show, LeaveAlternateScreen);
-        let _ = terminal::disable_raw_mode();
+        leave_terminal();
     }
 }
 
-fn run_tui(
-    store: &Store,
-    graph: &flurry_graph::Graph,
-    theme: ui::ThemeName,
+fn wait_for_enter() {
+    eprintln!("Press Enter to return to flurry.");
+    let _ = std::io::stdin().read_line(&mut String::new());
+}
+
+async fn sync_from_tui(store: &mut Store, profile: &str) -> std::io::Result<String> {
+    leave_terminal();
+    let result = collect_and_save(store, Some(profile)).await;
+    let notice = match &result {
+        Ok((id, snap)) if snap.datasets.iter().any(|d| d.error.is_some()) => {
+            format!("Snapshot {id} saved, some datasets failed")
+        }
+        Ok((id, _)) => format!("Snapshot {id} saved"),
+        Err(e) => {
+            eprintln!("Error: {e}");
+            wait_for_enter();
+            "Sync failed".to_string()
+        }
+    };
+    enter_terminal()?;
+    Ok(notice)
+}
+
+fn key_is_picker_request(s: &State, key: Key) -> bool {
+    s.mode == Mode::Normal && s.picker.is_none() && matches!(key, Key::Char('R'))
+}
+
+fn open_picker(s: &mut State) {
+    s.notice = None;
+    match config::profiles() {
+        Ok((profiles, cursor)) if !profiles.is_empty() => {
+            s.picker = Some(Picker { profiles, cursor })
+        }
+        Ok(_) => {
+            s.notice = Some("No Snowflake connections found; see docs/getting-started.md".into())
+        }
+        Err(e) => s.notice = Some(e.lines().next().unwrap_or_default().to_string()),
+    }
+}
+
+async fn run_tui(
+    store: &mut Store,
+    graph: &mut flurry_graph::Graph,
+    mut s: State,
+    theme: &ui::Theme,
 ) -> std::io::Result<()> {
-    terminal::enable_raw_mode()?;
-    let _guard = TermGuard;
-    execute!(stdout(), EnterAlternateScreen, crossterm::cursor::Hide)?;
-    let mut s = State::new(Tab::Roles);
-    let theme = ui::Theme::new(theme);
     while !s.quit {
         let entity = match s.tab {
             Tab::Users => Entity::Users,
@@ -574,13 +635,13 @@ fn run_tui(
         s.cursors[s.tab.index()] = cursor;
         let lines = match table.rows.get(cursor) {
             Some(row) => {
-                detail::lines(store, graph, entity, &table, row).map_err(std::io::Error::other)?
+                detail::lines(store, &*graph, entity, &table, row).map_err(std::io::Error::other)?
             }
             None => Vec::new(),
         };
         let detail: Vec<String> = lines.iter().map(|l| l.text.clone()).collect();
         let (w, h) = terminal::size()?;
-        let out = ui::render(&items, &detail, &s, w as usize, h as usize, &theme);
+        let out = ui::render(&items, &detail, &s, w as usize, h as usize, theme);
         execute!(
             stdout(),
             crossterm::cursor::MoveTo(0, 0),
@@ -611,7 +672,15 @@ fn run_tui(
             items.len()
         };
         let link = lines.get(s.scroll).and_then(|l| l.link.as_ref());
+        if key_is_picker_request(&s, key) {
+            open_picker(&mut s);
+            continue;
+        }
         s = handle_key(s, key, size, link);
+        if let Some(profile) = s.sync.take() {
+            s.notice = Some(sync_from_tui(store, &profile).await?);
+            *graph = store.graph().map_err(std::io::Error::other)?;
+        }
     }
     Ok(())
 }
@@ -620,7 +689,7 @@ fn run_tui(
 async fn main() {
     let cli = Cli::parse();
     let result = match cli.cmd {
-        None => theme(cli.theme).and_then(tui),
+        None => tui(cli.theme).await,
         Some(Cmd::Sync(p)) => sync(&p).await,
         Some(Cmd::Refresh {
             kind,
