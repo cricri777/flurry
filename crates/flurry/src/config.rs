@@ -28,6 +28,44 @@ pub fn load(name: Option<&str>) -> Result<Connection, String> {
     resolve(&config_dir()?, name, &env::vars().collect::<Vec<_>>())
 }
 
+fn default_name(config: Option<&toml::Table>, var: &dyn Fn(&str) -> Option<String>) -> String {
+    var("SNOWFLAKE_DEFAULT_CONNECTION_NAME")
+        .or_else(|| {
+            config?
+                .get("default_connection_name")?
+                .as_str()
+                .map(String::from)
+        })
+        .unwrap_or_else(|| "default".into())
+}
+
+fn connections(dir: &std::path::Path, config: Option<toml::Table>) -> Result<toml::Table, String> {
+    Ok(match read(dir.join("connections.toml"))? {
+        Some(t) => t,
+        None => config
+            .and_then(|mut c| c.remove("connections"))
+            .and_then(|c| c.try_into().ok())
+            .unwrap_or_default(),
+    })
+}
+
+/// Connection names of the Snowflake config, sorted, with the index of the default one.
+pub fn profiles() -> Result<(Vec<String>, usize), String> {
+    list_profiles(&config_dir()?, &env::vars().collect::<Vec<_>>())
+}
+
+fn list_profiles(
+    dir: &std::path::Path,
+    vars: &[(String, String)],
+) -> Result<(Vec<String>, usize), String> {
+    let var = |k: &str| vars.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+    let config = read(dir.join("config.toml"))?;
+    let default = default_name(config.as_ref(), &var);
+    let names: Vec<String> = connections(dir, config)?.keys().cloned().collect();
+    let index = names.iter().position(|n| *n == default).unwrap_or(0);
+    Ok((names, index))
+}
+
 // Pure core of `load`: the environment is passed in so it can be tested.
 fn resolve(
     dir: &std::path::Path,
@@ -38,24 +76,8 @@ fn resolve(
     let config = read(dir.join("config.toml"))?;
     let name = name
         .map(String::from)
-        .or_else(|| var("SNOWFLAKE_DEFAULT_CONNECTION_NAME"))
-        .or_else(|| {
-            config
-                .as_ref()?
-                .get("default_connection_name")?
-                .as_str()
-                .map(String::from)
-        })
-        .unwrap_or_else(|| "default".into());
-
-    // connections.toml takes over entirely when present.
-    let table = match read(dir.join("connections.toml"))? {
-        Some(t) => t,
-        None => config
-            .and_then(|mut c| c.remove("connections"))
-            .and_then(|c| c.try_into().ok())
-            .unwrap_or_default(),
-    };
+        .unwrap_or_else(|| default_name(config.as_ref(), &var));
+    let table = connections(dir, config)?;
     let mut conn: Connection = table
         .get(&name)
         .and_then(|v| v.as_table())
@@ -233,6 +255,23 @@ mod tests {
         assert_eq!(c["password"], "secret");
         assert_eq!(c["account"], "Z");
         assert_eq!(c["role"], "R");
+    }
+
+    #[test]
+    fn profiles_are_sorted_and_the_default_is_indexed() {
+        let d = dir("profiles", &[("config.toml", CONFIG)]);
+        let (names, default) = list_profiles(&d, &[]).unwrap();
+        assert_eq!(names[default], "prod");
+        assert!(names.windows(2).all(|w| w[0] < w[1]));
+        let vars = env_of(&[("SNOWFLAKE_DEFAULT_CONNECTION_NAME", "dev")]);
+        let (names, default) = list_profiles(&d, &vars).unwrap();
+        assert_eq!(names[default], "dev");
+    }
+
+    #[test]
+    fn no_config_gives_no_profiles() {
+        let d = dir("noprofiles", &[]);
+        assert!(list_profiles(&d, &[]).unwrap().0.is_empty());
     }
 
     #[test]

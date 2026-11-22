@@ -21,7 +21,7 @@ flurry [command]
 | `flurry roles inherits <role> [--inverse] [-f table\|json\|csv]` | Lists, offline, the roles a role inherits directly or transitively (or, with `--inverse`, the roles that inherit it); warns `UNKNOWN / INCOMPLETE` on stderr when role inheritance was not collected. |
 | `flurry users\|roles\|warehouses list [-s <text>] [-f table\|json\|csv]` | Lists entities from the latest snapshot, offline. |
 
-- Only `sync`, `refresh` and `connection test` contact Snowflake; everything else is local.
+- Only `sync`, `refresh`, `connection test` and `R` in the TUI contact Snowflake; everything else is local.
 - `refresh --all` gives current (not up to 120 min delayed) grants for the entities already listed, but costs a few `SHOW` per entity; entities no longer visible are skipped, and `sync` is faster and also finds new ones.
 - Progress goes to stderr and results to stdout; errors exit with status 1.
 
@@ -32,6 +32,7 @@ flurry [command]
 - In the details, `l`/Right/`Enter` on a related user, role or warehouse opens it, and `Ctrl+o` or `Backspace` returns to where you were.
 - `--theme terminal|latte|frappe|macchiato|mocha` (or `FLURRY_THEME`, or `theme` in the [config file](#flurry-configuration)) picks the colors; `terminal` (default) follows the terminal's palette and the others are [Catppuccin](https://catppuccin.com) flavors in truecolor.
 - A user's details list `USAGE` access per warehouse (`ACCESS`, `NO ACCESS`, `UNKNOWN / INCOMPLETE`), like `flurry access`.
+- `R` opens a profile picker over the connections of the [Snowflake config](#snowflake-configuration) (`j`/`k` choose, `Enter` syncs, `Esc` or `q` cancels). A window shows the progress without leaving the TUI, `Esc` or `q` cancels and `Enter` closes it when done; the new snapshot is then loaded, also from an empty database. The TUI cannot ask for an MFA passcode, so set `passcode` in the connection or reuse the cached login of a previous `flurry sync`.
 - `/` filters the list by name (`Esc` clears it), `:q` or `q` quits.
 
 ## Sync

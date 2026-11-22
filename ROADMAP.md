@@ -2,7 +2,7 @@
 
 This roadmap defines a deliberately incremental path from a technical proof of concept to a useful public release. Complete each milestone's exit criteria before moving on. The roadmap is a plan, not a promise about release dates.
 
-**Status:** Milestone 0 is done in Rust instead of Bun; Milestone 1 is done apart from the live check of targeted refresh and a live sync with restricted `ACCOUNT_USAGE` access, which the maintainer runs; Milestone 2 is done; Milestone 3 is in progress (tabs, detail panes, search, themes, relationship navigation and per-user warehouse access are done).
+**Status:** Milestone 0 is done in Rust instead of Bun; Milestone 1 is done apart from the live check of targeted refresh and a live sync with restricted `ACCOUNT_USAGE` access, which the maintainer runs; Milestone 2 is done; Milestone 3 is in progress (tabs, detail panes, search, themes, relationship navigation and per-user warehouse access and sync from the TUI are done).
 
 ## Product principles
 
@@ -82,6 +82,7 @@ Tasks:
 - Implement detail panels and bidirectional relationship navigation.
 - Implement Access Explorer and explainable user-to-warehouse paths.
 - Implement snapshot browsing and sync progress.
+- Sync from the TUI with `R`.
 - Implement Vim-friendly Normal, Insert, Visual/selection, and command-line modes.
 - Keep arrow keys, `Tab`, and `Shift+Tab` functional.
 - Add context-sensitive keyboard help and visible mode/focus status.
@@ -96,6 +97,7 @@ Tasks:
 Tasks:
 
 - Complete snapshot comparison and change summaries.
+- Add snapshot cleanup: prune old snapshots (keep the latest N), never the latest one, from the CLI and the TUI.
 - Complete JSON/CSV exports with sensitive-data warnings.
 - Add synthetic fixture generator for large accounts (for example, 10k users, 10k roles, and 100k+ relationship/grant edges).
 - Benchmark startup, graph construction, search, and relationship traversal.

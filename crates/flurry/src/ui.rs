@@ -1,4 +1,4 @@
-use crate::modes::{Focus, Mode, State, Tab};
+use crate::modes::{Focus, Mode, State, SyncStatus, Tab};
 use crossterm::style::{Attribute, Color, Stylize};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -106,6 +106,20 @@ fn pane(title: &str, body: Vec<String>, width: usize, focused: bool, t: &Theme) 
     out
 }
 
+fn sync_pane(status: &SyncStatus, width: usize, rows: usize, t: &Theme) -> Vec<String> {
+    let title = if status.finished {
+        format!("Sync {} finished", status.profile)
+    } else {
+        format!("Syncing {}...", status.profile)
+    };
+    let inner = width.saturating_sub(2).max(1);
+    let shown = status.lines.len().saturating_sub(rows);
+    let body = (shown..shown + rows)
+        .map(|i| fit(status.lines.get(i).map_or("", |l| l.as_str()), inner))
+        .collect();
+    pane(&title, body, width, true, t)
+}
+
 pub fn render(
     items: &[String],
     detail: &[String],
@@ -114,6 +128,14 @@ pub fn render(
     height: usize,
     t: &Theme,
 ) -> String {
+    let picked = s.picker.as_ref();
+    let detail = picked.map_or(detail, |p| p.profiles.as_slice());
+    let scroll = picked.map_or(s.scroll, |p| p.cursor);
+    let focus = if picked.is_some() {
+        Focus::Detail
+    } else {
+        s.focus
+    };
     let rows = height.saturating_sub(5).max(1);
     let cursor = s.cursor();
     let start = cursor.saturating_sub(rows - 1);
@@ -138,12 +160,12 @@ pub fn render(
         .collect();
     let detail_inner = detail_w.saturating_sub(2).max(1);
     // The selected detail line is only highlighted while the details have focus.
-    let selected = s.scroll.min(detail.len().saturating_sub(1));
+    let selected = scroll.min(detail.len().saturating_sub(1));
     let top = selected.saturating_sub(rows - 1);
     let detail_body = (top..top + rows)
         .map(|i| {
             let line = fit(detail.get(i).map_or("", |l| l.as_str()), detail_inner);
-            if s.focus == Focus::Detail && i == selected && i < detail.len() {
+            if focus == Focus::Detail && i == selected && i < detail.len() {
                 line.on(t.select).attribute(Attribute::Bold).to_string()
             } else {
                 line
@@ -153,19 +175,23 @@ pub fn render(
 
     let tab_name = |tab: Tab| format!("{tab:?}");
     let list_title = tab_name(s.tab);
-    let detail_title = items.get(cursor).map_or("Details", |n| n.as_str());
-    let list = pane(&list_title, list_body, list_w, s.focus == Focus::List, t);
+    let detail_title = match &s.picker {
+        Some(_) => "Sync from profile",
+        None => items.get(cursor).map_or("Details", |n| n.as_str()),
+    };
+    let list = pane(&list_title, list_body, list_w, focus == Focus::List, t);
     let det = pane(
         detail_title,
         detail_body,
         detail_w,
-        s.focus == Focus::Detail,
+        focus == Focus::Detail,
         t,
     );
-    let panes: Vec<String> = match (split, s.focus) {
-        (true, _) => list.into_iter().zip(det).map(|(a, b)| a + &b).collect(),
-        (false, Focus::List) => list,
-        (false, Focus::Detail) => det,
+    let panes: Vec<String> = match (&s.sync_status, split, focus) {
+        (Some(status), _, _) => sync_pane(status, width, rows, t),
+        (None, true, _) => list.into_iter().zip(det).map(|(a, b)| a + &b).collect(),
+        (None, false, Focus::List) => list,
+        (None, false, Focus::Detail) => det,
     };
 
     let tabs: String = Tab::ALL
@@ -195,8 +221,11 @@ pub fn render(
     // The status line never wraps: the hint is dropped first, then the typed text is cut from the left.
     let hint = match &s.notice {
         Some(notice) => notice.as_str(),
-        None if s.focus == Focus::Detail => "Enter open  ^O back  h list  / search  q quit",
-        None => "Tab tabs  j/k move  l detail  / search  : command  q quit",
+        None if s.sync_status.as_ref().is_some_and(|st| st.finished) => "Enter close",
+        None if s.sync_status.is_some() => "Esc/q cancel",
+        None if s.picker.is_some() => "j/k choose  Enter sync  Esc/q cancel",
+        None if s.focus == Focus::Detail => "Enter open  ^O back  h list  / search  R sync  q quit",
+        None => "Tab tabs  j/k move  l detail  / search  R sync  q quit",
     };
     let place = format!(
         "{}/{}",
@@ -210,7 +239,10 @@ pub fn render(
     };
     if s.mode == Mode::Normal {
         let full = label.width() + 1 + hint.width() + 2 + pos.width();
-        if full <= width {
+        if let Some(notice) = s.notice.as_ref().filter(|_| full > width) {
+            let room = width.saturating_sub(label.width() + 1);
+            out += &format!("{pill} {}", fit(notice, room).trim_end().with(t.accent));
+        } else if full <= width {
             out += &format!("{pill} {}  {}", hint.with(t.muted), pos.with(t.accent));
         } else {
             let room = width.saturating_sub(label.width() + 1);
@@ -276,6 +308,14 @@ mod tests {
     }
 
     #[test]
+    fn a_notice_that_does_not_fit_is_truncated_not_dropped() {
+        let mut s = State::new(Tab::Roles);
+        s.notice = Some("No Snowflake connections found; see docs/getting-started.md".into());
+        let line = status_line(&render(&[], &[], &s, 40, 10, &Theme::terminal()));
+        assert!(line.width() <= 40 && line.contains("No Snowflake") && line.contains('…'));
+    }
+
+    #[test]
     fn render_marks_the_selected_role_and_mode() {
         let items = vec!["ANALYST".to_string(), "ENGINEER".to_string()];
         let mut s = State::new(Tab::Roles);
@@ -287,6 +327,41 @@ mod tests {
         // A narrow terminal shows only the focused pane.
         let out = render(&items, &detail, &s, 40, 10, &Theme::terminal());
         assert!(!out.contains("SECURITYADMIN"));
+    }
+
+    #[test]
+    fn picker_replaces_the_detail_pane_with_the_profiles() {
+        let items = vec!["ANALYST".to_string()];
+        let mut s = State::new(Tab::Roles);
+        s.picker = Some(crate::modes::Picker {
+            profiles: vec!["dev".into(), "prod".into()],
+            cursor: 1,
+        });
+        let out = render(
+            &items,
+            &["owner: X".into()],
+            &s,
+            100,
+            10,
+            &Theme::terminal(),
+        );
+        assert!(out.contains("Sync from profile") && out.contains("prod"));
+        assert!(!out.contains("owner: X") && status_line(&out).contains("Esc/q cancel"));
+    }
+
+    #[test]
+    fn sync_status_replaces_the_panes_and_shows_the_latest_lines() {
+        let items = vec!["ANALYST".to_string()];
+        let mut s = State::new(Tab::Roles);
+        s.sync_status = Some(SyncStatus {
+            profile: "prod".into(),
+            lines: (0..20).map(|i| format!("step {i}")).collect(),
+            finished: false,
+        });
+        let out = render(&items, &[], &s, 100, 10, &Theme::terminal());
+        assert!(out.contains("Syncing prod...") && out.contains("step 19"));
+        assert!(!out.contains("step 0 ") && !out.contains("ANALYST"));
+        assert!(status_line(&out).contains("Esc/q cancel"));
     }
 
     #[test]

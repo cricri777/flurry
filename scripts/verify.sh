@@ -37,4 +37,21 @@ expect "NO ACCESS" "$flurry" access jane wh_etl
 expect "WH_ANALYTICS  ACCESS via ANALYST -> DATA_READ_ONLY" python3 "$skill/tui.py" "$flurry" 1 l G
 expect "WH_ETL  NO ACCESS" python3 "$skill/tui.py" "$flurry" 1 l G
 
+empty=$(mktemp -d /tmp/flurry-verify-XXXX)
+trap 'rm -rf "$XDG_DATA_HOME" "$empty"' EXIT
+printf 'default_connection_name = "prod"\n[connections.dev]\naccount = "x"\n[connections.prod]\naccount = "y"\n' >"$empty/config.toml"
+tui_empty() { XDG_DATA_HOME=$empty XDG_CACHE_HOME=$empty SNOWFLAKE_HOME=$empty python3 "$skill/tui.py" "$flurry" "$@"; }
+expect "No snapshot yet: press R to sync" tui_empty
+picker=$(tui_empty R)
+for needle in "Sync from profile" "prod" "dev" "Esc/q cancel"; do
+  grep -qF -- "$needle" <<<"$picker" || { echo "FAIL: '$needle' missing from the picker"; echo "$picker"; exit 1; }
+done
+! tui_empty R '\x1b' | grep -qF "Sync from profile" || { echo "FAIL: Esc did not close the picker"; exit 1; }
+
+failed=$(tui_empty R '\r')
+for needle in "Sync prod finished" "Failed: Missing 'user'" "Enter close"; do
+  grep -qF -- "$needle" <<<"$failed" || { echo "FAIL: '$needle' missing from the sync window"; echo "$failed"; exit 1; }
+done
+! tui_empty R '\r' '\r' | grep -qF "finished" || { echo "FAIL: Enter did not close the sync window"; exit 1; }
+
 echo "verify: all checks passed"
