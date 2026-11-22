@@ -1,10 +1,6 @@
 # Getting started
 
-The happy path: configure a default Snowflake connection, install `flurry`, sync once, then query users, roles and warehouses offline.
-
-## 0. Prerequisites
-
-Install Rust and clone the repository as described in [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup), then open a shell in the repository root.
+The happy path: install `flurry`, configure a default Snowflake connection, sync once, then query users, roles and warehouses offline.
 
 ## 1. Configure a default connection
 
@@ -35,25 +31,38 @@ Find your account identifier in [Account identifiers](https://docs.snowflake.com
 
 ## 2. Install flurry
 
-From the repository root, install the binary into `~/.cargo/bin`:
+Download the archive for your system from the [latest release](https://github.com/cricri777/flurry/releases/latest):
+
+| System | Archive |
+|---|---|
+| Linux and WSL Ubuntu 22.04 or newer | `flurry-<version>-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS, Apple silicon | `flurry-<version>-aarch64-apple-darwin.tar.gz` |
+| macOS, Intel | `flurry-<version>-x86_64-apple-darwin.tar.gz` |
+| Windows | `flurry-<version>-x86_64-pc-windows-msvc.zip` |
+
+On Linux, WSL and macOS, verify the checksum, extract the binary and put it on `PATH`:
 
 ```bash
-cargo install --path crates/flurry
-```
-
-Cargo installs there, but that directory is often not on `PATH`. Add it for the current shell only:
-
-```bash
-export PATH="$HOME/.cargo/bin:$PATH"
-```
-
-To make it permanent, add the same line to your shell startup file (for example `~/.bashrc` or `~/.zshrc`). Then check it:
-
-```bash
+sha256sum -c flurry-*.sha256   # use shasum -a 256 -c on macOS
+tar xzf flurry-*.tar.gz
+mkdir -p ~/.local/bin && mv flurry ~/.local/bin/
+export PATH="$HOME/.local/bin:$PATH"   # add this line to ~/.bashrc or ~/.zshrc to keep it
 flurry --help
 ```
 
-Until `flurry` is on `PATH`, run it with `cargo run` as described in [CONTRIBUTING.md](../CONTRIBUTING.md#3-run-flurry).
+On Windows, extract `flurry.exe` from the zip into a folder on your `PATH`.
+
+With Rust installed, you can build from source instead:
+
+```bash
+cargo install --git https://github.com/cricri777/flurry flurry
+```
+
+Cargo installs into `~/.cargo/bin`, which you may need to add to `PATH`. To run from a clone without installing, see [CONTRIBUTING.md](../CONTRIBUTING.md#development-setup).
+
+### WSL
+
+The `externalbrowser` login calls `xdg-open`, which WSL may not have. Flurry prints the SSO URL, so open it in your Windows browser, or install `wslu` and set `BROWSER=wslview`.
 
 ## 3. Test the connection and sync
 

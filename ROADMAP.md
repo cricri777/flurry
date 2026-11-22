@@ -103,7 +103,7 @@ Tasks:
 - Benchmark startup, graph construction, search, and relationship traversal.
 - Test interrupted and partially failed syncs.
 - Finalize security documentation and least-privilege guidance.
-- Add installation/build instructions and release packaging.
+- Add installation/build instructions and release packaging. Done: release binaries for Linux, macOS and Windows.
 - Add terminal screenshots or a short demo using synthetic data only.
 - Add contribution guidance and publish the selected license.
 

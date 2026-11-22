@@ -29,6 +29,14 @@ cargo test --workspace
 
 New to Rust? Read [The Rust Book](https://doc.rust-lang.org/book/) chapters 1-10, use `cargo check` while iterating, and add a dependency (`cargo add`) only when std can't do the job.
 
+## Releasing
+
+Bump `version` in `crates/flurry/Cargo.toml`, merge to `main`, then push a matching tag; `.github/workflows/release.yml` builds the archives and publishes the release.
+
+```bash
+git tag v0.1.0 && git push origin v0.1.0
+```
+
 ## Architecture boundaries
 
 Each responsibility gets its own crate under `crates/`; italic crates are planned.
