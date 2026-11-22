@@ -150,31 +150,32 @@ pub fn setting(path: &std::path::Path, key: &str) -> Result<Option<String>, Stri
     }
 }
 
-/// Best-effort write of a 0600 file inside a 0700 directory.
+/// Best-effort write of a 0600 file inside a 0700 directory (permissions are Unix-only).
 pub fn write_private(path: &std::path::Path, bytes: &[u8]) {
     use std::io::Write;
-    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
     let Some(dir) = path.parent() else { return };
     if fs::create_dir_all(dir).is_err() {
         return;
     }
-    let _ = fs::set_permissions(dir, fs::Permissions::from_mode(0o700));
-    if let Ok(mut f) = fs::OpenOptions::new()
-        .write(true)
-        .create(true)
-        .truncate(true)
-        .mode(0o600)
-        .open(path)
-    {
+    restrict(dir, 0o700);
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    if let Ok(mut f) = options.open(path) {
         let _ = f.write_all(bytes);
     }
 }
 
-/// Best-effort chmod for local data.
+/// Best-effort chmod for local data; a no-op off Unix.
+#[cfg(unix)]
 pub fn restrict(path: &std::path::Path, mode: u32) {
     use std::os::unix::fs::PermissionsExt;
     let _ = fs::set_permissions(path, fs::Permissions::from_mode(mode));
 }
+
+#[cfg(not(unix))]
+pub fn restrict(_path: &std::path::Path, _mode: u32) {}
 
 #[cfg(test)]
 mod tests {
