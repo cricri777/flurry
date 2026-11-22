@@ -54,4 +54,7 @@ for needle in "Sync prod finished" "Failed: Missing 'user'" "Enter close"; do
 done
 ! tui_empty R '\r' '\r' | grep -qF "finished" || { echo "FAIL: Enter did not close the sync window"; exit 1; }
 
+expect "Deleted 1 snapshot(s)." "$flurry" delete 1
+expect "Deleted 0 snapshot(s)." "$flurry" delete --all
+
 echo "verify: all checks passed"

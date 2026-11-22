@@ -34,6 +34,16 @@ CREATE INDEX IF NOT EXISTS i_role_edges ON role_edges (snapshot_id, parent);
 CREATE INDEX IF NOT EXISTS i_wh_priv ON warehouse_privileges (snapshot_id, role_name);
 ";
 
+const SNAPSHOT_TABLES: [&str; 7] = [
+    "datasets",
+    "users",
+    "roles",
+    "warehouses",
+    "user_roles",
+    "role_edges",
+    "warehouse_privileges",
+];
+
 pub struct Store(Connection);
 
 /// A table of strings: column headers and rows.
@@ -225,6 +235,43 @@ impl Store {
         insert_rows(&tx, id, s)?;
         tx.commit().map_err(e)?;
         Ok(id)
+    }
+
+    /// Deletes the given snapshots (all when `None`) in one transaction, failing on an unknown id.
+    pub fn delete_snapshots(&mut self, ids: Option<&[i64]>) -> Result<usize, String> {
+        let tx = self.0.transaction().map_err(e)?;
+        let existing: Vec<i64> = tx
+            .prepare("SELECT id FROM snapshots")
+            .map_err(e)?
+            .query_map([], |r| r.get(0))
+            .map_err(e)?
+            .collect::<Result<_, _>>()
+            .map_err(e)?;
+        let doomed: Vec<i64> = match ids {
+            None => existing,
+            Some(ids) => {
+                if let Some(missing) = ids.iter().find(|id| !existing.contains(id)) {
+                    return Err(format!("No snapshot with id {missing}."));
+                }
+                let mut unique = ids.to_vec();
+                unique.sort_unstable();
+                unique.dedup();
+                unique
+            }
+        };
+        for id in &doomed {
+            for table in SNAPSHOT_TABLES {
+                tx.execute(
+                    &format!("DELETE FROM {table} WHERE snapshot_id = ?"),
+                    params![id],
+                )
+                .map_err(e)?;
+            }
+            tx.execute("DELETE FROM snapshots WHERE id = ?", params![id])
+                .map_err(e)?;
+        }
+        tx.commit().map_err(e)?;
+        Ok(doomed.len())
     }
 
     /// Replaces one dataset row of the latest snapshot.
@@ -691,6 +738,40 @@ mod tests {
         );
         assert!(s.has(Entity::Roles, "ANALYST").unwrap());
         assert!(!s.has(Entity::Roles, "ANALY").unwrap());
+    }
+
+    #[test]
+    fn delete_snapshots_removes_only_the_given_ids() {
+        let mut s = Store::in_memory();
+        s.save("default", &snapshot(&["A"])).unwrap();
+        s.save("default", &snapshot(&["B"])).unwrap();
+        assert_eq!(s.delete_snapshots(Some(&[1])).unwrap(), 1);
+        let left = s.snapshots().unwrap();
+        assert_eq!(left.rows.len(), 1);
+        assert_eq!(left.rows[0][0], "2");
+        assert_eq!(s.list(Entity::Roles, "").unwrap().rows.len(), 1);
+    }
+
+    #[test]
+    fn delete_snapshots_with_unknown_id_deletes_nothing() {
+        let mut s = Store::in_memory();
+        s.save("default", &snapshot(&["A"])).unwrap();
+        assert!(s.delete_snapshots(Some(&[1, 99])).is_err());
+        assert_eq!(s.snapshots().unwrap().rows.len(), 1);
+    }
+
+    #[test]
+    fn delete_all_empties_every_snapshot_table() {
+        let mut s = Store::in_memory();
+        s.save("default", &snapshot(&["A"])).unwrap();
+        s.save("default", &snapshot(&["B"])).unwrap();
+        assert_eq!(s.delete_snapshots(None).unwrap(), 2);
+        for table in SNAPSHOT_TABLES.iter().chain(&["snapshots"]) {
+            let n: i64 =
+                s.0.query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |r| r.get(0))
+                    .unwrap();
+            assert_eq!(n, 0, "{table}");
+        }
     }
 
     #[test]
