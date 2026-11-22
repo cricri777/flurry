@@ -59,6 +59,15 @@ enum Cmd {
         #[arg(short, long, value_enum, default_value = "table")]
         format: Format,
     },
+    /// Delete local snapshots by id, or all of them with --all.
+    Delete {
+        /// Snapshot ids to delete (see `flurry snapshots`).
+        #[arg(required_unless_present = "all")]
+        ids: Vec<i64>,
+        /// Delete every snapshot.
+        #[arg(long, conflicts_with = "ids")]
+        all: bool,
+    },
     /// Compare two local snapshots; defaults to the latest and the previous one of the same account and role.
     Diff {
         /// Older snapshot id (see `flurry snapshots`).
@@ -373,6 +382,12 @@ fn status() -> Result<(), String> {
 
 fn snapshots(format: Format) -> Result<(), String> {
     print_table(&Store::open()?.snapshots()?, format);
+    Ok(())
+}
+
+fn delete(ids: &[i64], all: bool) -> Result<(), String> {
+    let count = Store::open()?.delete_snapshots((!all).then_some(ids))?;
+    println!("Deleted {count} snapshot(s).");
     Ok(())
 }
 
@@ -765,6 +780,7 @@ async fn main() {
         }) => refresh(kind, name, &profile).await,
         Some(Cmd::Status) => status(),
         Some(Cmd::Snapshots { format }) => snapshots(format),
+        Some(Cmd::Delete { ids, all }) => delete(&ids, all),
         Some(Cmd::Diff { from, to, format }) => diff(from.zip(to), format),
         Some(Cmd::Connection {
             action: ConnectionCmd::Test(p),
