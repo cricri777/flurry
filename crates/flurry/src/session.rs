@@ -104,8 +104,24 @@ fn save_cache(c: &Connection, token: &str, expires: u64) {
 }
 
 // Waits for the IdP redirect to localhost and extracts the `token` query parameter.
+const BROWSER_LOGIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
 fn wait_for_token(listener: TcpListener) -> Result<String, String> {
-    let (mut s, _) = listener.accept().map_err(|e| e.to_string())?;
+    listener.set_nonblocking(true).map_err(|e| e.to_string())?;
+    let deadline = std::time::Instant::now() + BROWSER_LOGIN_TIMEOUT;
+    let mut s = loop {
+        match listener.accept() {
+            Ok((s, _)) => break s,
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                if std::time::Instant::now() > deadline {
+                    return Err("Timed out waiting for the browser login".into());
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    };
+    s.set_nonblocking(false).map_err(|e| e.to_string())?;
     let mut buf = [0u8; 8192];
     let n = s.read(&mut buf).map_err(|e| e.to_string())?;
     let req = String::from_utf8_lossy(&buf[..n]);
@@ -132,7 +148,11 @@ async fn post(req: reqwest::RequestBuilder) -> Result<Value, String> {
 
 impl Session {
     /// Reuses a cached session token while it is valid, otherwise logs in with the configured authenticator.
-    pub async fn connect(c: &Connection) -> Result<Self, String> {
+    pub async fn connect(
+        c: &Connection,
+        log: &(dyn Fn(&str) + Send + Sync),
+        can_prompt: bool,
+    ) -> Result<Self, String> {
         let auth = c
             .get("authenticator")
             .map_or(String::new(), |a| a.to_ascii_lowercase());
@@ -148,13 +168,16 @@ impl Session {
             }
         }
         match auth.as_str() {
-            "externalbrowser" => Self::login_browser(c).await,
-            "username_password_mfa" => Self::login_mfa(c).await,
+            "externalbrowser" => Self::login_browser(c, log).await,
+            "username_password_mfa" => Self::login_mfa(c, can_prompt).await,
             _ => Self::login_key(c).await,
         }
     }
 
-    async fn login_browser(c: &Connection) -> Result<Self, String> {
+    async fn login_browser(
+        c: &Connection,
+        log: &(dyn Fn(&str) + Send + Sync),
+    ) -> Result<Self, String> {
         let (name, user, base) = endpoint(c)?;
         let http = reqwest::Client::new();
         let listener = TcpListener::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
@@ -175,7 +198,7 @@ impl Session {
         let sso_url = data["ssoUrl"].as_str().ok_or("No ssoUrl in response")?;
         let proof = data["proofKey"].as_str().ok_or("No proofKey in response")?;
 
-        eprintln!("Opening browser for SSO: {sso_url}");
+        log(&format!("Opening browser for SSO: {sso_url}"));
         let _ = Command::new("xdg-open").arg(sso_url).spawn();
         let token = tokio::task::spawn_blocking(move || wait_for_token(listener))
             .await
@@ -190,12 +213,18 @@ impl Session {
     }
 
     /// Password login with a TOTP passcode from the config or the terminal.
-    async fn login_mfa(c: &Connection) -> Result<Self, String> {
+    async fn login_mfa(c: &Connection, can_prompt: bool) -> Result<Self, String> {
         let password = c
             .get("password")
             .ok_or("Missing 'password' (set SNOWFLAKE_CONNECTIONS_<NAME>_PASSWORD)")?;
         let passcode = match c.get("passcode") {
             Some(p) => p.clone(),
+            None if !can_prompt => {
+                return Err(
+                    "MFA passcode needed: set `passcode` in the connection or run `flurry sync` in a shell"
+                        .into(),
+                );
+            }
             None => {
                 eprint!("MFA passcode: ");
                 let mut line = String::new();

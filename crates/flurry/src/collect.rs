@@ -334,7 +334,7 @@ fn split_role_grants(r: &Rows) -> (Vec<RoleEdge>, Vec<WarehousePrivilege>) {
 }
 
 /// Collects a full metadata snapshot; access denied on an ACCOUNT_USAGE grant dataset records it as failed, any other error aborts.
-pub async fn collect(s: &Session, log: impl Fn(&str)) -> Result<Snapshot, String> {
+pub async fn collect(s: &Session, log: impl Fn(&str) + Sync) -> Result<Snapshot, String> {
     let mut snap = Snapshot::default();
 
     let id = s.query(IDENTITY_SQL).await?;

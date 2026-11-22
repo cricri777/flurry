@@ -14,10 +14,12 @@ use crossterm::{
 };
 use detail::chain;
 use flurry_graph::Access;
-use modes::{Focus, Key, Mode, Picker, State, Tab, handle_key};
+use modes::{Focus, Key, Mode, Picker, State, SyncStatus, Tab, handle_key};
 use serde_json::{Value, json};
 use session::Session;
 use std::io::{Write, stdout};
+use std::sync::mpsc;
+use std::time::Duration;
 use store::{Entity, Store, Table};
 
 #[derive(Parser)]
@@ -228,30 +230,38 @@ fn print_table(t: &Table, format: Format) {
 }
 
 async fn connect(profile: Option<&str>) -> Result<Session, String> {
-    Session::connect(&config::load(profile)?).await
+    Session::connect(&config::load(profile)?, &|line| eprintln!("{line}"), true).await
 }
 
-async fn collect_and_save(
-    store: &mut Store,
+async fn collect_snapshot(
     profile: Option<&str>,
-) -> Result<(i64, collect::Snapshot), String> {
-    let session = connect(profile).await?;
-    let snap = collect::collect(&session, |what| eprintln!("Collecting {what}...")).await?;
-    let id = store.save(profile.unwrap_or("default"), &snap)?;
-    Ok((id, snap))
+    log: &(dyn Fn(&str) + Send + Sync),
+    can_prompt: bool,
+) -> Result<collect::Snapshot, String> {
+    let session = Session::connect(&config::load(profile)?, log, can_prompt).await?;
+    collect::collect(&session, |what| log(&format!("Collecting {what}..."))).await
+}
+
+fn summary(id: i64, snap: &collect::Snapshot) -> Vec<String> {
+    let mut lines = vec![format!(
+        "Snapshot {id} saved (account {}, role {})",
+        snap.fingerprint, snap.active_role
+    )];
+    for d in &snap.datasets {
+        lines.push(match &d.error {
+            None => format!("  {:<22} {}", d.name, d.rows),
+            Some(err) => format!("  {:<22} FAILED: {err}", d.name),
+        });
+    }
+    lines
 }
 
 async fn sync(p: &Profile) -> Result<(), String> {
-    let (id, snap) = collect_and_save(&mut Store::open()?, p.profile.as_deref()).await?;
-    println!(
-        "Snapshot {id} saved (account {}, role {})",
-        snap.fingerprint, snap.active_role
-    );
-    for d in &snap.datasets {
-        match &d.error {
-            None => println!("  {:<22} {}", d.name, d.rows),
-            Some(err) => println!("  {:<22} FAILED: {err}", d.name),
-        }
+    let profile = p.profile.as_deref();
+    let snap = collect_snapshot(profile, &|line| eprintln!("{line}"), true).await?;
+    let id = Store::open()?.save(profile.unwrap_or("default"), &snap)?;
+    for line in summary(id, &snap) {
+        println!("{line}");
     }
     if snap.datasets.iter().any(|d| d.error.is_some()) {
         return Err(
@@ -570,27 +580,58 @@ impl Drop for TermGuard {
     }
 }
 
-fn wait_for_enter() {
-    eprintln!("Press Enter to return to flurry.");
-    let _ = std::io::stdin().read_line(&mut String::new());
+enum SyncMsg {
+    Line(String),
+    Done(Result<Box<collect::Snapshot>, String>),
 }
 
-async fn sync_from_tui(store: &mut Store, profile: &str) -> std::io::Result<String> {
-    leave_terminal();
-    let result = collect_and_save(store, Some(profile)).await;
-    let notice = match &result {
-        Ok((id, snap)) if snap.datasets.iter().any(|d| d.error.is_some()) => {
-            format!("Snapshot {id} saved, some datasets failed")
+fn start_sync(profile: String) -> (tokio::task::JoinHandle<()>, mpsc::Receiver<SyncMsg>) {
+    let (tx, rx) = mpsc::channel();
+    let task = tokio::spawn(async move {
+        let log_tx = tx.clone();
+        let log = move |line: &str| {
+            let _ = log_tx.send(SyncMsg::Line(line.to_string()));
+        };
+        let result = collect_snapshot(Some(&profile), &log, false)
+            .await
+            .map(Box::new);
+        let _ = tx.send(SyncMsg::Done(result));
+    });
+    (task, rx)
+}
+
+fn drain_sync(
+    rx: &mpsc::Receiver<SyncMsg>,
+    s: &mut State,
+    store: &mut Store,
+    graph: &mut flurry_graph::Graph,
+) -> std::io::Result<(bool, bool)> {
+    let (mut any, mut done) = (false, false);
+    while let Ok(msg) = rx.try_recv() {
+        any = true;
+        let Some(status) = s.sync_status.as_mut() else {
+            continue;
+        };
+        match msg {
+            SyncMsg::Line(line) => status.lines.push(line),
+            SyncMsg::Done(result) => {
+                let saved = result.and_then(|snap| {
+                    let id = store.save(&status.profile, &snap)?;
+                    Ok((id, snap))
+                });
+                match saved {
+                    Ok((id, snap)) => {
+                        status.lines.extend(summary(id, &snap));
+                        *graph = store.graph().map_err(std::io::Error::other)?;
+                    }
+                    Err(e) => status.lines.push(format!("Failed: {e}")),
+                }
+                status.finished = true;
+                done = true;
+            }
         }
-        Ok((id, _)) => format!("Snapshot {id} saved"),
-        Err(e) => {
-            eprintln!("Error: {e}");
-            wait_for_enter();
-            "Sync failed".to_string()
-        }
-    };
-    enter_terminal()?;
-    Ok(notice)
+    }
+    Ok((any, done))
 }
 
 fn key_is_picker_request(s: &State, key: Key) -> bool {
@@ -616,7 +657,14 @@ async fn run_tui(
     mut s: State,
     theme: &ui::Theme,
 ) -> std::io::Result<()> {
+    let mut running: Option<(tokio::task::JoinHandle<()>, mpsc::Receiver<SyncMsg>)> = None;
     while !s.quit {
+        if let Some((_, rx)) = &running {
+            let (_, done) = drain_sync(rx, &mut s, store, graph)?;
+            if done {
+                running = None;
+            }
+        }
         let entity = match s.tab {
             Tab::Users => Entity::Users,
             Tab::Roles => Entity::Roles,
@@ -649,6 +697,15 @@ async fn run_tui(
         )?;
         print!("{out}");
         stdout().flush()?;
+        if let Some((_, rx)) = &running {
+            let mut changed = false;
+            while !changed && !event::poll(Duration::from_millis(100))? {
+                (changed, _) = drain_sync(rx, &mut s, store, graph)?;
+            }
+            if changed {
+                continue;
+            }
+        }
         let Event::Key(k) = event::read()? else {
             continue;
         };
@@ -677,9 +734,18 @@ async fn run_tui(
             continue;
         }
         s = handle_key(s, key, size, link);
+        if s.sync_status.is_none()
+            && let Some((task, _)) = running.take()
+        {
+            task.abort();
+        }
         if let Some(profile) = s.sync.take() {
-            s.notice = Some(sync_from_tui(store, &profile).await?);
-            *graph = store.graph().map_err(std::io::Error::other)?;
+            s.sync_status = Some(SyncStatus {
+                profile: profile.clone(),
+                lines: vec![format!("Connecting with profile {profile}...")],
+                finished: false,
+            });
+            running = Some(start_sync(profile));
         }
     }
     Ok(())
@@ -731,6 +797,7 @@ async fn main() {
         eprintln!("Error: {e}");
         std::process::exit(1);
     }
+    std::process::exit(0);
 }
 
 #[cfg(test)]

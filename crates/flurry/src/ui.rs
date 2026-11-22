@@ -1,4 +1,4 @@
-use crate::modes::{Focus, Mode, State, Tab};
+use crate::modes::{Focus, Mode, State, SyncStatus, Tab};
 use crossterm::style::{Attribute, Color, Stylize};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
@@ -106,6 +106,20 @@ fn pane(title: &str, body: Vec<String>, width: usize, focused: bool, t: &Theme) 
     out
 }
 
+fn sync_pane(status: &SyncStatus, width: usize, rows: usize, t: &Theme) -> Vec<String> {
+    let title = if status.finished {
+        format!("Sync {} finished", status.profile)
+    } else {
+        format!("Syncing {}...", status.profile)
+    };
+    let inner = width.saturating_sub(2).max(1);
+    let shown = status.lines.len().saturating_sub(rows);
+    let body = (shown..shown + rows)
+        .map(|i| fit(status.lines.get(i).map_or("", |l| l.as_str()), inner))
+        .collect();
+    pane(&title, body, width, true, t)
+}
+
 pub fn render(
     items: &[String],
     detail: &[String],
@@ -173,10 +187,11 @@ pub fn render(
         focus == Focus::Detail,
         t,
     );
-    let panes: Vec<String> = match (split, focus) {
-        (true, _) => list.into_iter().zip(det).map(|(a, b)| a + &b).collect(),
-        (false, Focus::List) => list,
-        (false, Focus::Detail) => det,
+    let panes: Vec<String> = match (&s.sync_status, split, focus) {
+        (Some(status), _, _) => sync_pane(status, width, rows, t),
+        (None, true, _) => list.into_iter().zip(det).map(|(a, b)| a + &b).collect(),
+        (None, false, Focus::List) => list,
+        (None, false, Focus::Detail) => det,
     };
 
     let tabs: String = Tab::ALL
@@ -206,7 +221,9 @@ pub fn render(
     // The status line never wraps: the hint is dropped first, then the typed text is cut from the left.
     let hint = match &s.notice {
         Some(notice) => notice.as_str(),
-        None if s.picker.is_some() => "j/k choose  Enter sync  Esc cancel",
+        None if s.sync_status.as_ref().is_some_and(|st| st.finished) => "Enter close",
+        None if s.sync_status.is_some() => "Esc/q cancel",
+        None if s.picker.is_some() => "j/k choose  Enter sync  Esc/q cancel",
         None if s.focus == Focus::Detail => "Enter open  ^O back  h list  / search  R sync  q quit",
         None => "Tab tabs  j/k move  l detail  / search  R sync  q quit",
     };
@@ -329,7 +346,22 @@ mod tests {
             &Theme::terminal(),
         );
         assert!(out.contains("Sync from profile") && out.contains("prod"));
-        assert!(!out.contains("owner: X") && status_line(&out).contains("Esc cancel"));
+        assert!(!out.contains("owner: X") && status_line(&out).contains("Esc/q cancel"));
+    }
+
+    #[test]
+    fn sync_status_replaces_the_panes_and_shows_the_latest_lines() {
+        let items = vec!["ANALYST".to_string()];
+        let mut s = State::new(Tab::Roles);
+        s.sync_status = Some(SyncStatus {
+            profile: "prod".into(),
+            lines: (0..20).map(|i| format!("step {i}")).collect(),
+            finished: false,
+        });
+        let out = render(&items, &[], &s, 100, 10, &Theme::terminal());
+        assert!(out.contains("Syncing prod...") && out.contains("step 19"));
+        assert!(!out.contains("step 0 ") && !out.contains("ANALYST"));
+        assert!(status_line(&out).contains("Esc/q cancel"));
     }
 
     #[test]
