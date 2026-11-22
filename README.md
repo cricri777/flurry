@@ -5,7 +5,7 @@
 > [!WARNING]
 > Work in progress and unstable: everything may change without notice.
 
-New here? Follow [Getting started](docs/getting-started.md); day-to-day usage is in [Usage](docs/usage.md) and the plan is in the [Roadmap](ROADMAP.md).
+New here? [Install](docs/getting-started.md#2-install-flurry) a release binary and follow [Getting started](docs/getting-started.md); day-to-day usage is in [Usage](docs/usage.md) and the plan is in the [Roadmap](ROADMAP.md).
 
 Flurry syncs Snowflake users, account roles, warehouses and grants into a local SQLite snapshot, then lets you search and navigate role relationships offline. It targets platform engineers and administrators of large accounts, and always shows when data was collected, where it came from, and whether it may be incomplete or stale.
 
