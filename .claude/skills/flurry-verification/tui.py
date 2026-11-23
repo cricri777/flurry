@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Drives the flurry TUI in a pseudo-terminal: python3 tui.py <flurry-binary> [keys...]; prints the final screen."""
+"""Drives the flurry TUI in a pseudo-terminal: python3 tui.py <flurry-binary> [keys...]; prints the final screen. TUI_ROWS sets the terminal height (default 14)."""
 import fcntl
 import os
 import pty
@@ -36,7 +36,7 @@ def main() -> None:
     pid, fd = pty.fork()
     if pid == 0:
         os.execv(binary, [binary])
-    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", 14, 60, 0, 0))
+    fcntl.ioctl(fd, termios.TIOCSWINSZ, struct.pack("HHHH", int(os.environ.get("TUI_ROWS", "14")), 60, 0, 0))
     raw = read(fd, 1.0)
     for key in keys:
         os.write(fd, key.encode().decode("unicode_escape").encode())

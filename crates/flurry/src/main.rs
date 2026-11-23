@@ -726,6 +726,10 @@ async fn run_tui(
         };
         let key = match k.code {
             KeyCode::Char('o') if k.modifiers.contains(KeyModifiers::CONTROL) => Key::Back,
+            KeyCode::Char('d') if k.modifiers.contains(KeyModifiers::CONTROL) => Key::HalfDown,
+            KeyCode::Char('u') if k.modifiers.contains(KeyModifiers::CONTROL) => Key::HalfUp,
+            KeyCode::Char('f') if k.modifiers.contains(KeyModifiers::CONTROL) => Key::PageDown,
+            KeyCode::Char('b') if k.modifiers.contains(KeyModifiers::CONTROL) => Key::PageUp,
             KeyCode::Char(c) => Key::Char(c),
             KeyCode::Up => Key::Up,
             KeyCode::Down => Key::Down,
@@ -748,7 +752,7 @@ async fn run_tui(
             open_picker(&mut s);
             continue;
         }
-        s = handle_key(s, key, size, link);
+        s = handle_key(s, key, size, ui::list_rows(h as usize), link);
         if s.sync_status.is_none()
             && let Some((task, _)) = running.take()
         {

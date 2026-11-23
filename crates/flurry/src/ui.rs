@@ -120,6 +120,10 @@ fn sync_pane(status: &SyncStatus, width: usize, rows: usize, t: &Theme) -> Vec<S
     pane(&title, body, width, true, t)
 }
 
+pub fn list_rows(height: usize) -> usize {
+    height.saturating_sub(5).max(1)
+}
+
 pub fn render(
     items: &[String],
     detail: &[String],
@@ -136,7 +140,7 @@ pub fn render(
     } else {
         s.focus
     };
-    let rows = height.saturating_sub(5).max(1);
+    let rows = list_rows(height);
     let cursor = s.cursor();
     let start = cursor.saturating_sub(rows - 1);
     // Narrow terminals show only the focused pane.
@@ -223,9 +227,9 @@ pub fn render(
         Some(notice) => notice.as_str(),
         None if s.sync_status.as_ref().is_some_and(|st| st.finished) => "Enter close",
         None if s.sync_status.is_some() => "Esc/q cancel",
-        None if s.picker.is_some() => "j/k choose  Enter sync  Esc/q cancel",
+        None if s.picker.is_some() => "j/k ^d/^u choose  Enter sync  Esc/q cancel",
         None if s.focus == Focus::Detail => "Enter open  ^O back  h list  / search  R sync  q quit",
-        None => "Tab tabs  j/k move  l detail  / search  R sync  q quit",
+        None => "Tab tabs  j/k ^d/^u move  l detail  / search  R sync  q quit",
     };
     let place = format!(
         "{}/{}",

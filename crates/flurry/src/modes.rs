@@ -158,11 +158,15 @@ pub enum Key {
     Backspace,
     /// `Ctrl+o`: back to where the last followed link was opened.
     Back,
+    HalfDown,
+    HalfUp,
+    PageDown,
+    PageUp,
 }
 
 // Pure transition so mode behavior is testable without a terminal; `size` is the length of the focused pane
 // and `link` the link of the selected detail line.
-pub fn handle_key(mut s: State, key: Key, size: usize, link: Option<&Link>) -> State {
+pub fn handle_key(mut s: State, key: Key, size: usize, page: usize, link: Option<&Link>) -> State {
     let last = size.saturating_sub(1);
     let i = s.tab.index();
     let next = Tab::ALL[(i + 1) % 3];
@@ -181,6 +185,9 @@ pub fn handle_key(mut s: State, key: Key, size: usize, link: Option<&Link>) -> S
         match key {
             Key::Char('j') | Key::Down => picker.cursor = (picker.cursor + 1).min(last),
             Key::Char('k') | Key::Up => picker.cursor = picker.cursor.saturating_sub(1),
+            Key::HalfDown | Key::HalfUp | Key::PageDown | Key::PageUp => {
+                picker.cursor = jump(key, picker.cursor, page, last)
+            }
             Key::Enter => {
                 s.sync = picker.profiles.get(picker.cursor).cloned();
                 s.picker = None;
@@ -193,6 +200,9 @@ pub fn handle_key(mut s: State, key: Key, size: usize, link: Option<&Link>) -> S
     match (s.mode, key) {
         (Mode::Normal, Key::Char('j') | Key::Down) => move_to(&mut s, |n| (n + 1).min(last)),
         (Mode::Normal, Key::Char('k') | Key::Up) => move_to(&mut s, |n| n.saturating_sub(1)),
+        (Mode::Normal, Key::HalfDown | Key::HalfUp | Key::PageDown | Key::PageUp) => {
+            move_to(&mut s, |n| jump(key, n, page, last))
+        }
         (Mode::Normal, Key::Char('G')) => move_to(&mut s, |_| last),
         (Mode::Normal, Key::Char('q')) => s.quit = true,
         (Mode::Normal, Key::Char('/')) => (s.mode, s.buffer) = (Mode::Insert, s.filter.clone()),
@@ -235,6 +245,18 @@ pub fn handle_key(mut s: State, key: Key, size: usize, link: Option<&Link>) -> S
     s
 }
 
+fn jump(key: Key, from: usize, page: usize, last: usize) -> usize {
+    let full = page.max(1);
+    let half = (page / 2).max(1);
+    match key {
+        Key::HalfDown => (from + half).min(last),
+        Key::PageDown => (from + full).min(last),
+        Key::HalfUp => from.saturating_sub(half),
+        Key::PageUp => from.saturating_sub(full),
+        _ => from,
+    }
+}
+
 // Moves the list cursor, or scrolls the detail pane when it has focus.
 fn move_to(s: &mut State, f: impl Fn(usize) -> usize) {
     match s.focus {
@@ -264,7 +286,78 @@ mod tests {
     }
 
     fn press(s: State, keys: &[Key]) -> State {
-        keys.iter().fold(s, |s, k| handle_key(s, *k, 3, None))
+        press_long(s, keys, 3, 4)
+    }
+
+    fn press_long(s: State, keys: &[Key], size: usize, page: usize) -> State {
+        keys.iter()
+            .fold(s, |s, k| handle_key(s, *k, size, page, None))
+    }
+
+    #[test]
+    fn half_and_full_pages_move_down_and_clamp_at_the_last_row() {
+        let s = press_long(start(), &[Key::HalfDown], 20, 10);
+        assert_eq!(s.cursor(), 5);
+        let s = press_long(s, &[Key::PageDown], 20, 10);
+        assert_eq!(s.cursor(), 15);
+        let s = press_long(s, &[Key::PageDown, Key::HalfDown], 20, 10);
+        assert_eq!(s.cursor(), 19);
+    }
+
+    #[test]
+    fn half_and_full_pages_move_up_and_clamp_at_the_first_row() {
+        let s = press_long(start(), &[Key::PageDown, Key::PageDown], 30, 10);
+        assert_eq!(s.cursor(), 20);
+        let s = press_long(s, &[Key::HalfUp], 30, 10);
+        assert_eq!(s.cursor(), 15);
+        let s = press_long(s, &[Key::PageUp], 30, 10);
+        assert_eq!(s.cursor(), 5);
+        let s = press_long(s, &[Key::PageUp, Key::HalfUp], 30, 10);
+        assert_eq!(s.cursor(), 0);
+    }
+
+    #[test]
+    fn a_page_of_one_row_still_moves_by_one_row() {
+        let s = press_long(start(), &[Key::HalfDown, Key::HalfDown], 20, 1);
+        assert_eq!(s.cursor(), 2);
+        let s = press_long(s, &[Key::HalfUp], 20, 0);
+        assert_eq!(s.cursor(), 1);
+    }
+
+    #[test]
+    fn page_keys_scroll_the_details_when_they_have_focus() {
+        let s = press_long(start(), &[Key::Char('l'), Key::HalfDown], 20, 10);
+        assert_eq!((s.focus, s.scroll, s.cursor()), (Focus::Detail, 5, 0));
+        let s = press_long(s, &[Key::PageUp], 20, 10);
+        assert_eq!(s.scroll, 0);
+    }
+
+    #[test]
+    fn page_keys_do_nothing_while_typing_a_search() {
+        let s = press_long(
+            start(),
+            &[Key::Char('/'), Key::PageDown, Key::HalfDown],
+            20,
+            10,
+        );
+        assert_eq!(
+            (s.cursor(), s.buffer.as_str(), s.filter.as_str()),
+            (0, "", "")
+        );
+    }
+
+    #[test]
+    fn page_keys_move_the_picker_cursor_and_clamp() {
+        let mut s = with_picker(0);
+        s.picker.as_mut().unwrap().profiles = (0..10).map(|n| n.to_string()).collect();
+        let s = press_long(s, &[Key::HalfDown], 3, 4);
+        assert_eq!(s.picker.as_ref().map(|p| p.cursor), Some(2));
+        let s = press_long(s, &[Key::PageDown, Key::PageDown, Key::PageDown], 3, 4);
+        assert_eq!(s.picker.as_ref().map(|p| p.cursor), Some(9));
+        let s = press_long(s, &[Key::PageUp, Key::HalfUp], 3, 4);
+        assert_eq!(s.picker.as_ref().map(|p| p.cursor), Some(3));
+        let s = press_long(s, &[Key::PageUp, Key::PageUp], 3, 4);
+        assert_eq!(s.picker.as_ref().map(|p| p.cursor), Some(0));
     }
 
     #[test]
@@ -350,7 +443,7 @@ mod tests {
             name: "WH_B".into(),
         };
         let s = press(start(), &[Key::Char('j'), Key::Char('l'), Key::Char('j')]);
-        let mut s = handle_key(s, Key::Enter, 3, Some(&link));
+        let mut s = handle_key(s, Key::Enter, 3, 4, Some(&link));
         assert_eq!(
             (s.tab, s.focus, s.goto.as_deref()),
             (Tab::Warehouses, Focus::Detail, Some("WH_B"))
@@ -428,7 +521,7 @@ mod tests {
             start(),
             &[Key::Char('/'), Key::Char('a'), Key::Enter, Key::Char('l')],
         );
-        let mut s = handle_key(s, Key::Enter, 3, Some(&link));
+        let mut s = handle_key(s, Key::Enter, 3, 4, Some(&link));
         s.resolve(&["JANE".into()]);
         assert_eq!((s.tab, s.filter.as_str()), (Tab::Roles, "a"));
         assert_eq!(s.notice.as_deref(), Some("GHOST is not in the snapshot"));
