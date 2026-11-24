@@ -248,7 +248,7 @@ async fn collect_snapshot(
     can_prompt: bool,
 ) -> Result<collect::Snapshot, String> {
     let session = Session::connect(&config::load(profile)?, log, can_prompt).await?;
-    collect::collect(&session, |what| log(&format!("Collecting {what}..."))).await
+    collect::collect(&session, log).await
 }
 
 fn summary(id: i64, snap: &collect::Snapshot) -> Vec<String> {

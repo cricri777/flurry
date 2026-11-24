@@ -84,14 +84,31 @@ fn now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+type Log<'a> = &'a (dyn Fn(&str) + Sync);
+
+// Shortens a statement to fit a log line: drops the SELECT column list and the WHERE clause.
+fn short(sql: &str) -> String {
+    let sql = sql.split(" WHERE ").next().unwrap_or(sql);
+    match sql.split_once(" FROM ") {
+        Some((_, table)) if sql.starts_with("SELECT") => format!("SELECT ... FROM {table}"),
+        _ => sql.to_string(),
+    }
+}
+
+// Runs a statement, logging it and its row count.
+async fn run(s: &Session, log: Log<'_>, sql: &str) -> Result<Rows, String> {
+    log(&format!("> {}", short(sql)));
+    let r = s.query(sql).await?;
+    log(&format!("  {} rows", r.rows.len()));
+    Ok(r)
+}
+
 // Pages through SHOW <object> with LIMIT/FROM until a short page is returned.
-async fn show_paged(s: &Session, object: &str) -> Result<Rows, String> {
+async fn show_paged(s: &Session, log: Log<'_>, object: &str) -> Result<Rows, String> {
     let mut all: Option<Rows> = None;
     let mut from = String::new();
     loop {
-        let page = s
-            .query(&format!("SHOW {object} LIMIT {PAGE}{from}"))
-            .await?;
+        let page = run(s, log, &format!("SHOW {object} LIMIT {PAGE}{from}")).await?;
         let n = page.rows.len();
         let last = page.get(n.wrapping_sub(1), "name");
         match &mut all {
@@ -334,32 +351,32 @@ fn split_role_grants(r: &Rows) -> (Vec<RoleEdge>, Vec<WarehousePrivilege>) {
 }
 
 /// Collects a full metadata snapshot; access denied on an ACCOUNT_USAGE grant dataset records it as failed, any other error aborts.
-pub async fn collect(s: &Session, log: impl Fn(&str) + Sync) -> Result<Snapshot, String> {
+pub async fn collect(s: &Session, log: Log<'_>) -> Result<Snapshot, String> {
     let mut snap = Snapshot::default();
 
-    let id = s.query(IDENTITY_SQL).await?;
+    let id = run(s, log, IDENTITY_SQL).await?;
     snap.account = id.get(0, "account").unwrap_or_default();
     snap.active_role = id.get(0, "role").unwrap_or_default();
     snap.fingerprint = fingerprint(&id);
 
-    log("users");
-    let r = show_paged(s, "USERS").await?;
+    log("Collecting users...");
+    let r = show_paged(s, log, "USERS").await?;
     for i in 0..r.rows.len() {
         snap.users.push(user_at(&r, i));
     }
     snap.datasets
         .push(dataset("users", "SHOW USERS", None, snap.users.len()));
 
-    log("roles");
-    let r = show_paged(s, "ROLES").await?;
+    log("Collecting roles...");
+    let r = show_paged(s, log, "ROLES").await?;
     for i in 0..r.rows.len() {
         snap.roles.push(role_at(&r, i));
     }
     snap.datasets
         .push(dataset("roles", "SHOW ROLES", None, snap.roles.len()));
 
-    log("warehouses");
-    let r = s.query("SHOW WAREHOUSES").await?;
+    log("Collecting warehouses...");
+    let r = run(s, log, "SHOW WAREHOUSES").await?;
     for i in 0..r.rows.len() {
         snap.warehouses.push(warehouse_at(&r, i));
     }
@@ -370,10 +387,9 @@ pub async fn collect(s: &Session, log: impl Fn(&str) + Sync) -> Result<Snapshot,
         snap.warehouses.len(),
     ));
 
-    log("user-role grants");
+    log("Collecting user-role grants...");
     let src = "ACCOUNT_USAGE.GRANTS_TO_USERS";
-    match s
-        .query("SELECT TO_VARCHAR(CREATED_ON) AS CREATED_ON, ROLE, GRANTEE_NAME, GRANTED_BY FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_USERS WHERE DELETED_ON IS NULL")
+    match run(s, log, "SELECT TO_VARCHAR(CREATED_ON) AS CREATED_ON, ROLE, GRANTEE_NAME, GRANTED_BY FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_USERS WHERE DELETED_ON IS NULL")
         .await
     {
         Ok(r) => {
@@ -400,10 +416,9 @@ pub async fn collect(s: &Session, log: impl Fn(&str) + Sync) -> Result<Snapshot,
         )),
     }
 
-    log("role grants");
+    log("Collecting role grants...");
     let src = "ACCOUNT_USAGE.GRANTS_TO_ROLES";
-    match s
-        .query("SELECT TO_VARCHAR(CREATED_ON) AS CREATED_ON, PRIVILEGE, GRANTED_ON, NAME, GRANTEE_NAME, GRANT_OPTION, GRANTED_BY FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_ROLES WHERE DELETED_ON IS NULL AND GRANTED_TO = 'ROLE' AND ((GRANTED_ON = 'ROLE' AND PRIVILEGE = 'USAGE') OR GRANTED_ON = 'WAREHOUSE')")
+    match run(s, log, "SELECT TO_VARCHAR(CREATED_ON) AS CREATED_ON, PRIVILEGE, GRANTED_ON, NAME, GRANTEE_NAME, GRANT_OPTION, GRANTED_BY FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_ROLES WHERE DELETED_ON IS NULL AND GRANTED_TO = 'ROLE' AND ((GRANTED_ON = 'ROLE' AND PRIVILEGE = 'USAGE') OR GRANTED_ON = 'WAREHOUSE')")
         .await
     {
         Ok(r) => {
@@ -553,6 +568,15 @@ mod tests {
         assert_eq!(fingerprint(&r), "ACME-PROD (AWS_US_EAST_1)");
         let r = rows(["account"], &[["AB123"]]);
         assert_eq!(fingerprint(&r), "AB123");
+    }
+
+    #[test]
+    fn logged_statements_drop_the_column_list_and_filters() {
+        assert_eq!(short("SHOW USERS LIMIT 10"), "SHOW USERS LIMIT 10");
+        assert_eq!(
+            short("SELECT A, B FROM SNOWFLAKE.ACCOUNT_USAGE.X WHERE DELETED_ON IS NULL"),
+            "SELECT ... FROM SNOWFLAKE.ACCOUNT_USAGE.X"
+        );
     }
 
     #[test]
