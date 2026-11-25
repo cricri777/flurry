@@ -387,7 +387,7 @@ pub async fn collect(s: &Session, log: Log<'_>) -> Result<Snapshot, String> {
         snap.warehouses.len(),
     ));
 
-    log("Collecting user-role grants...");
+    log("Collecting user-role grants (can take a few minutes)...");
     let src = "ACCOUNT_USAGE.GRANTS_TO_USERS";
     match run(s, log, "SELECT TO_VARCHAR(CREATED_ON) AS CREATED_ON, ROLE, GRANTEE_NAME, GRANTED_BY FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_USERS WHERE DELETED_ON IS NULL")
         .await
@@ -416,7 +416,7 @@ pub async fn collect(s: &Session, log: Log<'_>) -> Result<Snapshot, String> {
         )),
     }
 
-    log("Collecting role grants...");
+    log("Collecting role grants (can take a few minutes)...");
     let src = "ACCOUNT_USAGE.GRANTS_TO_ROLES";
     match run(s, log, "SELECT TO_VARCHAR(CREATED_ON) AS CREATED_ON, PRIVILEGE, GRANTED_ON, NAME, GRANTEE_NAME, GRANT_OPTION, GRANTED_BY FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_ROLES WHERE DELETED_ON IS NULL AND GRANTED_TO = 'ROLE' AND ((GRANTED_ON = 'ROLE' AND PRIVILEGE = 'USAGE') OR GRANTED_ON = 'WAREHOUSE')")
         .await

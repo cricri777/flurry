@@ -36,6 +36,12 @@ fn now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+
+fn is_in_progress(v: &Value) -> bool {
+    matches!(v["code"].as_str(), Some("333333" | "333334"))
+}
+
 fn check(v: &Value) -> Result<&Value, String> {
     if v["success"].as_bool() == Some(true) {
         Ok(&v["data"])
@@ -325,12 +331,29 @@ impl Session {
                 .json(&json!({"sqlText": sql, "asyncExec": false, "sequenceId": 1})),
         )
         .await?;
+        let v = self.wait_result(v).await?;
         let d = check(&v)?;
         let mut rows = rows_from(d);
         for chunk in d["chunks"].as_array().into_iter().flatten() {
             rows.rows.extend(self.chunk(d, chunk).await?);
         }
         Ok(rows)
+    }
+
+    // Snowflake answers a query running past ~45s with an in-progress code; its result is polled from `getResultUrl`.
+    async fn wait_result(&self, mut v: Value) -> Result<Value, String> {
+        while is_in_progress(&v) {
+            let url = v["data"]["getResultUrl"]
+                .as_str()
+                .ok_or("Query in progress without getResultUrl")?;
+            tokio::time::sleep(POLL_INTERVAL).await;
+            v = post(self.http.get(format!("{}{url}", self.base)).header(
+                "Authorization",
+                format!("Snowflake Token=\"{}\"", self.token),
+            ))
+            .await?;
+        }
+        Ok(v)
     }
 
     async fn chunk(&self, d: &Value, chunk: &Value) -> Result<Vec<Vec<Option<String>>>, String> {
@@ -420,6 +443,14 @@ mod tests {
         let err = json!({"success": false, "message": "Incorrect username or password"});
         assert_eq!(check(&err).unwrap_err(), "Incorrect username or password");
         assert!(check(&json!({"success": false})).is_err());
+    }
+
+    #[test]
+    fn in_progress_codes_are_detected() {
+        assert!(is_in_progress(&json!({"code": "333333", "success": true})));
+        assert!(is_in_progress(&json!({"code": "333334", "success": true})));
+        assert!(!is_in_progress(&json!({"code": null, "success": true})));
+        assert!(!is_in_progress(&json!({"success": true})));
     }
 
     #[test]
