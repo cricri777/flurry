@@ -36,7 +36,11 @@ fn now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_secs(2);
+const POLL_INTERVAL: std::time::Duration = if cfg!(test) {
+    std::time::Duration::from_millis(10)
+} else {
+    std::time::Duration::from_secs(2)
+};
 
 fn is_in_progress(v: &Value) -> bool {
     matches!(v["code"].as_str(), Some("333333" | "333334"))
@@ -451,6 +455,58 @@ mod tests {
         assert!(is_in_progress(&json!({"code": "333334", "success": true})));
         assert!(!is_in_progress(&json!({"code": null, "success": true})));
         assert!(!is_in_progress(&json!({"success": true})));
+    }
+
+    // Serves one canned HTTP/1.1 JSON body per connection and returns the requests it saw.
+    fn mock(bodies: Vec<String>) -> (String, std::thread::JoinHandle<Vec<String>>) {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let handle = std::thread::spawn(move || {
+            let mut seen = Vec::new();
+            for body in bodies {
+                let (mut s, _) = listener.accept().unwrap();
+                let mut buf = [0u8; 8192];
+                let n = s.read(&mut buf).unwrap();
+                seen.push(
+                    String::from_utf8_lossy(&buf[..n])
+                        .lines()
+                        .next()
+                        .unwrap()
+                        .into(),
+                );
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                s.write_all(resp.as_bytes()).unwrap();
+            }
+            seen
+        });
+        (base, handle)
+    }
+
+    #[tokio::test]
+    async fn query_polls_until_a_long_running_query_returns_its_rows() {
+        let pending = json!({"code": "333333", "success": true,
+            "data": {"getResultUrl": "/queries/q1/result"}});
+        let done = json!({"success": true, "data": {
+            "rowtype": [{"name": "ROLE"}], "rowset": [["A"], ["B"]]}});
+        let (base, server) = mock(vec![
+            pending.to_string(),
+            pending.to_string(),
+            done.to_string(),
+        ]);
+        let s = Session {
+            http: reqwest::Client::new(),
+            base,
+            token: "t".into(),
+        };
+        let rows = s.query("SELECT 1").await.unwrap();
+        assert_eq!(rows.rows.len(), 2);
+        let seen = server.join().unwrap();
+        assert!(seen[0].starts_with("POST /queries/v1/query-request"));
+        assert_eq!(seen[1], "GET /queries/q1/result HTTP/1.1");
+        assert_eq!(seen[2], "GET /queries/q1/result HTTP/1.1");
     }
 
     #[test]
