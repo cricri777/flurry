@@ -666,6 +666,42 @@ fn open_picker(s: &mut State) {
     }
 }
 
+// The value of the selected row: the list name, or the detail line's linked name or field value.
+fn yank_text(s: &State, items: &[String], lines: &[detail::Line]) -> Option<String> {
+    if s.focus == Focus::List {
+        return items.get(s.cursor()).cloned();
+    }
+    let line = lines.get(s.scroll)?;
+    let text = match &line.link {
+        Some(link) => link.name.as_str(),
+        None => line
+            .text
+            .split_once(": ")
+            .map_or(line.text.as_str(), |kv| kv.1),
+    };
+    Some(text.trim().to_string()).filter(|t| !t.is_empty())
+}
+
+// OSC 52 asks the terminal to copy, so it also works over SSH and tmux.
+fn osc52(text: &str) -> String {
+    const B64: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut b64 = String::new();
+    for chunk in text.as_bytes().chunks(3) {
+        let n = chunk
+            .iter()
+            .enumerate()
+            .fold(0u32, |n, (i, b)| n | (*b as u32) << (16 - 8 * i));
+        for i in 0..4 {
+            b64.push(if i <= chunk.len() {
+                B64[(n >> (18 - 6 * i) & 63) as usize] as char
+            } else {
+                '='
+            });
+        }
+    }
+    format!("\x1b]52;c;{b64}\x07")
+}
+
 async fn run_tui(
     store: &mut Store,
     graph: &mut flurry_graph::Graph,
@@ -752,6 +788,21 @@ async fn run_tui(
             open_picker(&mut s);
             continue;
         }
+        if s.mode == Mode::Normal
+            && s.picker.is_none()
+            && s.sync_status.is_none()
+            && matches!(key, Key::Char('y'))
+        {
+            s.notice = Some(match yank_text(&s, &items, &lines) {
+                Some(text) => {
+                    write!(stdout(), "{}", osc52(&text))?;
+                    stdout().flush()?;
+                    format!("Copied {text}")
+                }
+                None => "Nothing to copy".into(),
+            });
+            continue;
+        }
         s = handle_key(s, key, size, ui::list_rows(h as usize), link);
         if s.sync_status.is_none()
             && let Some((task, _)) = running.take()
@@ -822,8 +873,49 @@ async fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{access_table, csv_line, ident};
+    use super::{access_table, csv_line, ident, osc52, yank_text};
+    use crate::detail::Line;
+    use crate::modes::{Focus, Link, State, Tab};
     use flurry_graph::AccessPath;
+
+    #[test]
+    fn osc52_base64_pads_every_length() {
+        assert_eq!(osc52("A"), "\x1b]52;c;QQ==\x07");
+        assert_eq!(osc52("AB"), "\x1b]52;c;QUI=\x07");
+        assert_eq!(osc52("ABC"), "\x1b]52;c;QUJD\x07");
+    }
+
+    #[test]
+    fn yank_copies_the_list_name_or_the_detail_value() {
+        let items = vec!["ANALYST".to_string(), "READER".to_string()];
+        let plain = |text: &str| Line {
+            text: text.into(),
+            link: None,
+        };
+        let lines = vec![
+            plain("owner: SECURITYADMIN"),
+            plain(""),
+            Line {
+                text: "  WH_A  ACCESS via ANALYST".into(),
+                link: Some(Link {
+                    tab: Tab::Warehouses,
+                    name: "WH_A".into(),
+                }),
+            },
+        ];
+        let mut s = State::new(Tab::Roles);
+        s.cursors[Tab::Roles.index()] = 1;
+        assert_eq!(yank_text(&s, &items, &lines).as_deref(), Some("READER"));
+        s.focus = Focus::Detail;
+        assert_eq!(
+            yank_text(&s, &items, &lines).as_deref(),
+            Some("SECURITYADMIN")
+        );
+        s.scroll = 1;
+        assert_eq!(yank_text(&s, &items, &lines), None);
+        s.scroll = 2;
+        assert_eq!(yank_text(&s, &items, &lines).as_deref(), Some("WH_A"));
+    }
 
     #[test]
     fn ident_upper_cases_unquoted_names_only() {
