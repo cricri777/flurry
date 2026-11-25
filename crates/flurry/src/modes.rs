@@ -1,3 +1,5 @@
+use crate::detail::Line;
+
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Mode {
     Normal,
@@ -77,6 +79,8 @@ pub struct State {
     pub picker: Option<Picker>,
     pub sync: Option<String>,
     pub sync_status: Option<SyncStatus>,
+    /// Grant types unfolded in the role details; kept when moving between roles.
+    pub expanded: Vec<String>,
     history: Vec<View>,
     pub quit: bool,
 }
@@ -98,6 +102,7 @@ impl State {
             picker: None,
             sync: None,
             sync_status: None,
+            expanded: Vec::new(),
             history: Vec::new(),
             quit: false,
         }
@@ -124,6 +129,13 @@ impl State {
         self.switch(link.tab);
         self.focus = Focus::Detail;
         self.goto = Some(link.name.clone());
+    }
+
+    fn toggle(&mut self, fold: &str) {
+        match self.expanded.iter().position(|f| f == fold) {
+            Some(i) => _ = self.expanded.remove(i),
+            None => self.expanded.push(fold.to_string()),
+        }
     }
 
     fn back(&mut self) {
@@ -170,8 +182,8 @@ pub enum Key {
 }
 
 // Pure transition so mode behavior is testable without a terminal; `size` is the length of the focused pane
-// and `link` the link of the selected detail line.
-pub fn handle_key(mut s: State, key: Key, size: usize, page: usize, link: Option<&Link>) -> State {
+// and `line` the selected detail line.
+pub fn handle_key(mut s: State, key: Key, size: usize, page: usize, line: Option<&Line>) -> State {
     let last = size.saturating_sub(1);
     let i = s.tab.index();
     let next = Tab::ALL[(i + 1) % 3];
@@ -215,8 +227,10 @@ pub fn handle_key(mut s: State, key: Key, size: usize, page: usize, link: Option
         (Mode::Normal, Key::Tab) => s.switch(next),
         (Mode::Normal, Key::BackTab) => s.switch(prev),
         (Mode::Normal, Key::Char(c @ '1'..='3')) => s.switch(Tab::ALL[c as usize - '1' as usize]),
-        (Mode::Normal, Key::Char('l') | Key::Right | Key::Enter) => match (s.focus, link) {
-            (Focus::Detail, Some(link)) => s.follow(link),
+        (Mode::Normal, Key::Char('l' | ' ') | Key::Right | Key::Enter) => match (s.focus, line) {
+            (Focus::Detail, Some(Line { fold: Some(f), .. })) => s.toggle(f),
+            (Focus::Detail, Some(Line { link: Some(l), .. })) => s.follow(l),
+            _ if matches!(key, Key::Char(' ')) => {}
             _ => s.focus = Focus::Detail,
         },
         (Mode::Normal, Key::Backspace | Key::Back) => s.back(),
@@ -288,6 +302,14 @@ mod tests {
 
     fn start() -> State {
         State::new(Tab::Roles)
+    }
+
+    fn linked(link: Link) -> Line {
+        Line {
+            text: String::new(),
+            link: Some(link),
+            fold: None,
+        }
     }
 
     fn press(s: State, keys: &[Key]) -> State {
@@ -442,13 +464,30 @@ mod tests {
     }
 
     #[test]
+    fn enter_or_space_on_a_fold_toggles_it_and_keeps_it_across_roles() {
+        let fold = Line {
+            text: String::new(),
+            link: None,
+            fold: Some("TABLE".into()),
+        };
+        let s = press(start(), &[Key::Char('l')]);
+        let s = handle_key(s, Key::Enter, 3, 4, Some(&fold));
+        assert_eq!(s.expanded, ["TABLE"]);
+        assert_eq!(s.focus, Focus::Detail);
+        let s = press(s, &[Key::Char('h'), Key::Char('j'), Key::Char('l')]);
+        assert_eq!(s.expanded, ["TABLE"]);
+        let s = handle_key(s, Key::Char(' '), 3, 4, Some(&fold));
+        assert!(s.expanded.is_empty());
+    }
+
+    #[test]
     fn following_a_link_opens_the_entity_and_back_returns() {
         let link = Link {
             tab: Tab::Warehouses,
             name: "WH_B".into(),
         };
         let s = press(start(), &[Key::Char('j'), Key::Char('l'), Key::Char('j')]);
-        let mut s = handle_key(s, Key::Enter, 3, 4, Some(&link));
+        let mut s = handle_key(s, Key::Enter, 3, 4, Some(&linked(link)));
         assert_eq!(
             (s.tab, s.focus, s.goto.as_deref()),
             (Tab::Warehouses, Focus::Detail, Some("WH_B"))
@@ -526,7 +565,7 @@ mod tests {
             start(),
             &[Key::Char('/'), Key::Char('a'), Key::Enter, Key::Char('l')],
         );
-        let mut s = handle_key(s, Key::Enter, 3, 4, Some(&link));
+        let mut s = handle_key(s, Key::Enter, 3, 4, Some(&linked(link)));
         s.resolve(&["JANE".into()]);
         assert_eq!((s.tab, s.filter.as_str()), (Tab::Roles, "a"));
         assert_eq!(s.notice.as_deref(), Some("GHOST is not in the snapshot"));

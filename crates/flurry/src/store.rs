@@ -26,15 +26,19 @@ CREATE TABLE IF NOT EXISTS role_edges (
 CREATE TABLE IF NOT EXISTS warehouse_privileges (
   snapshot_id INTEGER NOT NULL, role_name TEXT NOT NULL, warehouse TEXT NOT NULL,
   privilege TEXT NOT NULL, grant_option TEXT, granted_by TEXT);
+CREATE TABLE IF NOT EXISTS role_grants (
+  snapshot_id INTEGER NOT NULL, role_name TEXT NOT NULL, privilege TEXT NOT NULL,
+  granted_on TEXT NOT NULL, name TEXT NOT NULL, grant_option TEXT, granted_by TEXT);
 CREATE INDEX IF NOT EXISTS i_users ON users (snapshot_id, name);
 CREATE INDEX IF NOT EXISTS i_roles ON roles (snapshot_id, name);
 CREATE INDEX IF NOT EXISTS i_warehouses ON warehouses (snapshot_id, name);
 CREATE INDEX IF NOT EXISTS i_user_roles ON user_roles (snapshot_id, user_name);
 CREATE INDEX IF NOT EXISTS i_role_edges ON role_edges (snapshot_id, parent);
 CREATE INDEX IF NOT EXISTS i_wh_priv ON warehouse_privileges (snapshot_id, role_name);
+CREATE INDEX IF NOT EXISTS i_role_grants ON role_grants (snapshot_id, role_name);
 ";
 
-const SNAPSHOT_TABLES: [&str; 7] = [
+const SNAPSHOT_TABLES: [&str; 8] = [
     "datasets",
     "users",
     "roles",
@@ -42,6 +46,7 @@ const SNAPSHOT_TABLES: [&str; 7] = [
     "user_roles",
     "role_edges",
     "warehouse_privileges",
+    "role_grants",
 ];
 
 pub struct Store(Connection);
@@ -160,6 +165,23 @@ fn insert_rows(tx: &rusqlite::Transaction, id: i64, s: &Snapshot) -> Result<(), 
         )
         .map_err(e)?;
     }
+    // Grants can be hundreds of thousands of rows, so the statement is prepared once.
+    let mut insert = tx
+        .prepare_cached("INSERT INTO role_grants VALUES (?, ?, ?, ?, ?, ?, ?)")
+        .map_err(e)?;
+    for g in &s.grants {
+        insert
+            .execute(params![
+                id,
+                g.role,
+                g.privilege,
+                g.granted_on,
+                g.name,
+                g.grant_option,
+                g.granted_by
+            ])
+            .map_err(e)?;
+    }
     Ok(())
 }
 
@@ -216,6 +238,7 @@ impl Store {
                 "DELETE FROM role_edges WHERE snapshot_id = ?1 AND (parent = ?2 OR child = ?2)",
                 "DELETE FROM user_roles WHERE snapshot_id = ?1 AND role_name = ?2",
                 "DELETE FROM warehouse_privileges WHERE snapshot_id = ?1 AND role_name = ?2",
+                "DELETE FROM role_grants WHERE snapshot_id = ?1 AND role_name = ?2",
             ],
             Entity::Warehouses => &[
                 "DELETE FROM warehouses WHERE snapshot_id = ?1 AND name = ?2",
@@ -381,6 +404,24 @@ impl Store {
                 })
             })
             .collect()
+    }
+
+    /// Grants of a role in the latest snapshot as (granted_on, privilege, name) rows, or `None` when they were not collected.
+    pub fn grants(&self, role: &str) -> Result<Option<Vec<Vec<String>>>, String> {
+        let latest = "snapshot_id = (SELECT MAX(id) FROM snapshots)";
+        let collected = self.table(
+            &format!(
+                "SELECT 1 FROM datasets WHERE {latest} AND name = 'role_grants' AND error IS NULL"
+            ),
+            &[],
+        )?;
+        if collected.rows.is_empty() {
+            return Ok(None);
+        }
+        let sql = format!(
+            "SELECT granted_on, privilege, name FROM role_grants WHERE role_name = ? AND {latest} ORDER BY granted_on, name, privilege"
+        );
+        Ok(Some(self.table(&sql, &[&role])?.rows))
     }
 
     /// Builds the RBAC graph of the latest snapshot, flagging failed datasets as incomplete.

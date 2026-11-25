@@ -32,6 +32,7 @@ flurry [command]
 - `j`/`k` or Down/Up move the cursor, or select a detail line when the details have focus; `l`/Right/`Enter` focus the details and `h`/Left/`Esc` go back.
 - `Ctrl+d`/`Ctrl+u` move half a page down/up and `Ctrl+f`/`Ctrl+b` move a full page down/up, in the list, in the details and in the profile picker; a page is the number of visible rows.
 - In the details, `l`/Right/`Enter` on a related user, role or warehouse opens it, and `Ctrl+o` or `Backspace` returns to where you were.
+- A role's details end with all its grants, folded by object type (`▸ TABLE (1180)`); `Enter`/`l`/Space unfolds or folds a type, and unfolded types stay open when you move to another role.
 - `y` copies the name of the selected row, or the value of the selected detail line, to the clipboard through the terminal (OSC 52).
 - `--theme terminal|latte|frappe|macchiato|mocha` (or `FLURRY_THEME`, or `theme` in the [config file](#flurry-configuration)) picks the colors; `terminal` (default) follows the terminal's palette and the others are [Catppuccin](https://catppuccin.com) flavors in truecolor.
 - A user's details list `USAGE` access per warehouse (`ACCESS`, `NO ACCESS`, `UNKNOWN / INCOMPLETE`), like `flurry access`.
