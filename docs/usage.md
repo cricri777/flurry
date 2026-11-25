@@ -41,6 +41,7 @@ flurry [command]
 - A sync collects `SHOW USERS`, `SHOW ROLES` and `SHOW WAREHOUSES` (paged), then the grants from `SNOWFLAKE.ACCOUNT_USAGE`.
 - The active role therefore needs access to `SNOWFLAKE.ACCOUNT_USAGE` and a warehouse for those queries.
 - Grant data can be up to 120 minutes old; `status` labels it.
+- The `ACCOUNT_USAGE` grant queries can take several minutes on large accounts; flurry polls until Snowflake returns the result and the TUI sync pane says so.
 - A snapshot is written in one transaction, so a failed sync keeps the previous snapshot.
 - If the active role is denied access to an `ACCOUNT_USAGE` grant view, the snapshot is still saved, `status` shows that dataset as `FAILED` with the error (its data is unknown, not empty) and `sync` exits with status 1; any other error aborts the sync.
 - Only `SHOW` and `SELECT` statements are ever sent, and user email addresses are not collected.
