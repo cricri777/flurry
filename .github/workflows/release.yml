@@ -8,6 +8,11 @@ jobs:
   create-release:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Check the tag matches the crate version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' crates/flurry/Cargo.toml | head -n1)
+          [ "$GITHUB_REF_NAME" = "v$version" ] || { echo "Tag $GITHUB_REF_NAME does not match Cargo.toml version $version"; exit 1; }
       - run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
