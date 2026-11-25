@@ -704,7 +704,7 @@ async fn run_tui(
         };
         let detail: Vec<String> = lines.iter().map(|l| l.text.clone()).collect();
         let (w, h) = terminal::size()?;
-        let out = ui::render(&items, &detail, &s, w as usize, h as usize, theme);
+        let out = ui::render(&items, &detail, &mut s, w as usize, h as usize, theme);
         execute!(
             stdout(),
             crossterm::cursor::MoveTo(0, 0),

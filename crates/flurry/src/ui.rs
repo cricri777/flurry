@@ -124,10 +124,22 @@ pub fn list_rows(height: usize) -> usize {
     height.saturating_sub(5).max(1)
 }
 
+// Moves the window only as far as needed to keep `selected` visible.
+fn follow(top: usize, selected: usize, rows: usize, len: usize) -> usize {
+    let top = top.min(len.saturating_sub(rows));
+    if selected < top {
+        selected
+    } else if selected >= top + rows {
+        selected + 1 - rows
+    } else {
+        top
+    }
+}
+
 pub fn render(
     items: &[String],
     detail: &[String],
-    s: &State,
+    s: &mut State,
     width: usize,
     height: usize,
     t: &Theme,
@@ -142,7 +154,8 @@ pub fn render(
     };
     let rows = list_rows(height);
     let cursor = s.cursor();
-    let start = cursor.saturating_sub(rows - 1);
+    let start = follow(s.list_top, cursor, rows, items.len());
+    s.list_top = start;
     // Narrow terminals show only the focused pane.
     let split = width >= 80;
     let list_w = if split { (width / 3).max(20) } else { width };
@@ -165,7 +178,8 @@ pub fn render(
     let detail_inner = detail_w.saturating_sub(2).max(1);
     // The selected detail line is only highlighted while the details have focus.
     let selected = scroll.min(detail.len().saturating_sub(1));
-    let top = selected.saturating_sub(rows - 1);
+    let top = follow(s.detail_top, selected, rows, detail.len());
+    s.detail_top = top;
     let detail_body = (top..top + rows)
         .map(|i| {
             let line = fit(detail.get(i).map_or("", |l| l.as_str()), detail_inner);
@@ -266,9 +280,16 @@ mod tests {
     #[test]
     fn named_theme_renders_truecolor_and_terminal_does_not() {
         let items = vec!["ANALYST".to_string()];
-        let s = State::new(Tab::Roles);
-        let mocha = render(&items, &[], &s, 40, 10, &Theme::new(ThemeName::Mocha));
-        let plain = render(&items, &[], &s, 40, 10, &Theme::new(ThemeName::Terminal));
+        let mut s = State::new(Tab::Roles);
+        let mocha = render(&items, &[], &mut s, 40, 10, &Theme::new(ThemeName::Mocha));
+        let plain = render(
+            &items,
+            &[],
+            &mut s,
+            40,
+            10,
+            &Theme::new(ThemeName::Terminal),
+        );
         assert!(mocha.contains("38;2;") && !plain.contains("38;2;"));
     }
 
@@ -303,11 +324,11 @@ mod tests {
     fn status_line_never_exceeds_the_width() {
         let items = vec!["ANALYST".to_string()];
         let mut s = State::new(Tab::Roles);
-        let narrow = status_line(&render(&items, &[], &s, 20, 10, &Theme::terminal()));
+        let narrow = status_line(&render(&items, &[], &mut s, 20, 10, &Theme::terminal()));
         assert!(narrow.width() <= 20 && !narrow.contains("quit"));
         s.mode = Mode::Command;
         s.buffer = "a-very-long-command-being-typed".into();
-        let cmd = status_line(&render(&items, &[], &s, 20, 10, &Theme::terminal()));
+        let cmd = status_line(&render(&items, &[], &mut s, 20, 10, &Theme::terminal()));
         assert!(cmd.width() <= 20 && cmd.ends_with("typed█"));
     }
 
@@ -315,7 +336,7 @@ mod tests {
     fn a_notice_that_does_not_fit_is_truncated_not_dropped() {
         let mut s = State::new(Tab::Roles);
         s.notice = Some("No Snowflake connections found; see docs/getting-started.md".into());
-        let line = status_line(&render(&[], &[], &s, 40, 10, &Theme::terminal()));
+        let line = status_line(&render(&[], &[], &mut s, 40, 10, &Theme::terminal()));
         assert!(line.width() <= 40 && line.contains("No Snowflake") && line.contains('…'));
     }
 
@@ -325,11 +346,11 @@ mod tests {
         let mut s = State::new(Tab::Roles);
         s.cursors[Tab::Roles.index()] = 1;
         let detail = vec!["owner: SECURITYADMIN".to_string()];
-        let out = render(&items, &detail, &s, 100, 10, &Theme::terminal());
+        let out = render(&items, &detail, &mut s, 100, 10, &Theme::terminal());
         assert!(out.contains("ENGINEER") && out.contains("NORMAL") && out.contains("2/2"));
         assert!(out.contains("owner: SECURITYADMIN") && out.contains("Warehouses"));
         // A narrow terminal shows only the focused pane.
-        let out = render(&items, &detail, &s, 40, 10, &Theme::terminal());
+        let out = render(&items, &detail, &mut s, 40, 10, &Theme::terminal());
         assert!(!out.contains("SECURITYADMIN"));
     }
 
@@ -344,7 +365,7 @@ mod tests {
         let out = render(
             &items,
             &["owner: X".into()],
-            &s,
+            &mut s,
             100,
             10,
             &Theme::terminal(),
@@ -362,7 +383,7 @@ mod tests {
             lines: (0..20).map(|i| format!("step {i}")).collect(),
             finished: false,
         });
-        let out = render(&items, &[], &s, 100, 10, &Theme::terminal());
+        let out = render(&items, &[], &mut s, 100, 10, &Theme::terminal());
         assert!(out.contains("Syncing prod...") && out.contains("step 19"));
         assert!(!out.contains("step 0 ") && !out.contains("ANALYST"));
         assert!(status_line(&out).contains("Esc/q cancel"));
@@ -375,10 +396,26 @@ mod tests {
         let mut s = State::new(Tab::Roles);
         s.focus = Focus::Detail;
         s.scroll = 15;
-        let out = render(&items, &detail, &s, 100, 10, &Theme::terminal());
+        let out = render(&items, &detail, &mut s, 100, 10, &Theme::terminal());
         assert!(out.contains("line 15") && !out.contains("line 10 "));
         s.notice = Some("GHOST is not in the snapshot".into());
-        let out = render(&items, &detail, &s, 100, 10, &Theme::terminal());
+        let out = render(&items, &detail, &mut s, 100, 10, &Theme::terminal());
         assert!(status_line(&out).contains("GHOST is not in the snapshot"));
+    }
+
+    #[test]
+    fn window_stays_put_while_the_cursor_moves_inside_it() {
+        let items: Vec<String> = (0..30).map(|i| format!("ROLE{i:02}")).collect();
+        let mut s = State::new(Tab::Roles);
+        s.cursors[s.tab.index()] = 20;
+        render(&items, &[], &mut s, 100, 10, &Theme::terminal());
+        assert_eq!(s.list_top, 16);
+        s.cursors[s.tab.index()] = 18;
+        let out = render(&items, &[], &mut s, 100, 10, &Theme::terminal());
+        assert_eq!(s.list_top, 16);
+        assert!(out.contains("ROLE16") && out.contains("ROLE20"));
+        s.cursors[s.tab.index()] = 15;
+        render(&items, &[], &mut s, 100, 10, &Theme::terminal());
+        assert_eq!(s.list_top, 15);
     }
 }
