@@ -64,6 +64,9 @@ pub struct State {
     pub cursors: [usize; 3],
     /// Selected detail line.
     pub scroll: usize,
+    /// First visible row of the list and of the detail pane, kept between renders.
+    pub list_top: usize,
+    pub detail_top: usize,
     pub buffer: String,
     /// Name search applied to the active list.
     pub filter: String,
@@ -86,6 +89,8 @@ impl State {
             focus: Focus::List,
             cursors: [0; 3],
             scroll: 0,
+            list_top: 0,
+            detail_top: 0,
             buffer: String::new(),
             filter: String::new(),
             goto: None,
