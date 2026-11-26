@@ -666,17 +666,19 @@ fn open_picker(s: &mut State) {
     }
 }
 
-// The value of the selected row: the list name, or the detail line's linked name or field value.
+// The value of the selected row: the list name, or the detail line's linked name, grant type, field value or granted object.
 fn yank_text(s: &State, items: &[String], lines: &[detail::Line]) -> Option<String> {
     if s.focus == Focus::List {
         return items.get(s.cursor()).cloned();
     }
     let line = lines.get(s.scroll)?;
-    let text = match &line.link {
-        Some(link) => link.name.as_str(),
-        None => line
+    let text = match (&line.link, &line.fold) {
+        (Some(link), _) => link.name.as_str(),
+        (_, Some(fold)) => fold.as_str(),
+        _ => line
             .text
             .split_once(": ")
+            .or_else(|| line.text.split_once(" on "))
             .map_or(line.text.as_str(), |kv| kv.1),
     };
     Some(text.trim().to_string()).filter(|t| !t.is_empty())
@@ -733,9 +735,8 @@ async fn run_tui(
         let cursor = s.cursor().min(items.len().saturating_sub(1));
         s.cursors[s.tab.index()] = cursor;
         let lines = match table.rows.get(cursor) {
-            Some(row) => {
-                detail::lines(store, &*graph, entity, &table, row).map_err(std::io::Error::other)?
-            }
+            Some(row) => detail::lines(store, &*graph, entity, &table, row, &s.expanded)
+                .map_err(std::io::Error::other)?,
             None => Vec::new(),
         };
         let detail: Vec<String> = lines.iter().map(|l| l.text.clone()).collect();
@@ -783,7 +784,6 @@ async fn run_tui(
         } else {
             items.len()
         };
-        let link = lines.get(s.scroll).and_then(|l| l.link.as_ref());
         if key_is_picker_request(&s, key) {
             open_picker(&mut s);
             continue;
@@ -803,7 +803,8 @@ async fn run_tui(
             });
             continue;
         }
-        s = handle_key(s, key, size, ui::list_rows(h as usize), link);
+        let line = lines.get(s.scroll);
+        s = handle_key(s, key, size, ui::list_rows(h as usize), line);
         if s.sync_status.is_none()
             && let Some((task, _)) = running.take()
         {
@@ -891,16 +892,19 @@ mod tests {
         let plain = |text: &str| Line {
             text: text.into(),
             link: None,
+            fold: None,
         };
         let lines = vec![
             plain("owner: SECURITYADMIN"),
             plain(""),
+            plain("    SELECT on DB.S.T"),
             Line {
                 text: "  WH_A  ACCESS via ANALYST".into(),
                 link: Some(Link {
                     tab: Tab::Warehouses,
                     name: "WH_A".into(),
                 }),
+                fold: None,
             },
         ];
         let mut s = State::new(Tab::Roles);
@@ -914,6 +918,8 @@ mod tests {
         s.scroll = 1;
         assert_eq!(yank_text(&s, &items, &lines), None);
         s.scroll = 2;
+        assert_eq!(yank_text(&s, &items, &lines).as_deref(), Some("DB.S.T"));
+        s.scroll = 3;
         assert_eq!(yank_text(&s, &items, &lines).as_deref(), Some("WH_A"));
     }
 

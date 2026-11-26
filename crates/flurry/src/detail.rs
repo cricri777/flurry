@@ -2,10 +2,54 @@ use crate::modes::{Link, Tab};
 use crate::store::{Entity, Related, Store, Table};
 use flurry_graph::{Access, AccessPath, Graph};
 
-/// One detail pane line; `link` names the entity it opens.
+/// One detail pane line; `link` names the entity it opens and `fold` the grant type it unfolds.
 pub struct Line {
     pub text: String,
     pub link: Option<Link>,
+    pub fold: Option<String>,
+}
+
+fn plain(text: String) -> Line {
+    Line {
+        text,
+        link: None,
+        fold: None,
+    }
+}
+
+// Grants of a role grouped by object type, one fold line per type; `expanded` types also list their grants.
+fn grant_lines(store: &Store, role: &str, expanded: &[String]) -> Result<Vec<Line>, String> {
+    let Some(rows) = store.grants(role)? else {
+        return Ok(vec![plain("grants: not collected, press R to sync".into())]);
+    };
+    let mut out = vec![plain(format!("grants ({}):", rows.len()))];
+    for group in rows.chunk_by(|a, b| a[0] == b[0]) {
+        let kind = &group[0][0];
+        let open = expanded.contains(kind);
+        out.push(Line {
+            text: format!("{} {kind} ({})", if open { "▾" } else { "▸" }, group.len()),
+            link: None,
+            fold: Some(kind.clone()),
+        });
+        if !open {
+            continue;
+        }
+        let tab = match kind.as_str() {
+            "ROLE" => Some(Tab::Roles),
+            "USER" => Some(Tab::Users),
+            "WAREHOUSE" => Some(Tab::Warehouses),
+            _ => None,
+        };
+        out.extend(group.iter().map(|r| Line {
+            text: format!("    {} on {}", r[1], r[2]),
+            link: tab.map(|tab| Link {
+                tab,
+                name: r[2].clone(),
+            }),
+            fold: None,
+        }));
+    }
+    Ok(out)
 }
 
 pub fn chain(path: &AccessPath) -> String {
@@ -49,8 +93,8 @@ pub fn lines(
     entity: Entity,
     table: &Table,
     row: &[String],
+    expanded: &[String],
 ) -> Result<Vec<Line>, String> {
-    let plain = |text: String| Line { text, link: None };
     let mut out: Vec<Line> = table
         .headers
         .iter()
@@ -91,7 +135,12 @@ pub fn lines(
         out.extend(r.items.into_iter().map(|(text, name)| Line {
             text: format!("  {text}"),
             link: Some(Link { tab, name }),
+            fold: None,
         }));
+    }
+    if matches!(entity, Entity::Roles) {
+        out.push(plain(String::new()));
+        out.extend(grant_lines(store, &row[0], expanded)?);
     }
     Ok(out)
 }
@@ -99,7 +148,7 @@ pub fn lines(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::collect::{Snapshot, Warehouse, WarehousePrivilege};
+    use crate::collect::{Dataset, Grant, Snapshot, Warehouse, WarehousePrivilege};
 
     #[test]
     fn role_detail_lists_fields_and_sections() {
@@ -114,6 +163,7 @@ mod tests {
             Entity::Roles,
             &table,
             &["ANALYST".into(), "SECURITYADMIN".into()],
+            &[],
         )
         .unwrap();
         assert_eq!(out[0].text, "owner: SECURITYADMIN");
@@ -140,7 +190,15 @@ mod tests {
             headers: vec!["name".into()],
             rows: vec![],
         };
-        let out = lines(&store, &graph, Entity::Roles, &table, &["ANALYST".into()]).unwrap();
+        let out = lines(
+            &store,
+            &graph,
+            Entity::Roles,
+            &table,
+            &["ANALYST".into()],
+            &[],
+        )
+        .unwrap();
         let link = |text: &str| {
             out.iter()
                 .find(|l| l.text == text)
@@ -161,6 +219,72 @@ mod tests {
             })
         );
         assert_eq!(link("inherits (1):"), None);
+    }
+
+    #[test]
+    fn role_grants_fold_by_type_and_unfold_on_demand() {
+        let mut store = Store::in_memory();
+        let grant = |privilege: &str, granted_on: &str, name: &str| Grant {
+            role: "ANALYST".into(),
+            privilege: privilege.into(),
+            granted_on: granted_on.into(),
+            name: name.into(),
+            grant_option: None,
+            granted_by: None,
+        };
+        let snapshot = Snapshot {
+            grants: vec![
+                grant("SELECT", "TABLE", "DB.S.T2"),
+                grant("USAGE", "DATABASE", "DB"),
+                grant("SELECT", "TABLE", "DB.S.T1"),
+                grant("USAGE", "WAREHOUSE", "WH_A"),
+            ],
+            datasets: vec![Dataset {
+                name: "role_grants".into(),
+                source: "test",
+                latency_minutes: None,
+                rows: 4,
+                collected_at: 0,
+                error: None,
+            }],
+            ..Snapshot::default()
+        };
+        store.save("test", &snapshot).unwrap();
+        let texts = |expanded: &[String]| -> Vec<String> {
+            let out = grant_lines(&store, "ANALYST", expanded).unwrap();
+            out.into_iter().map(|l| l.text).collect()
+        };
+        assert_eq!(
+            texts(&[]),
+            [
+                "grants (4):",
+                "▸ DATABASE (1)",
+                "▸ TABLE (2)",
+                "▸ WAREHOUSE (1)"
+            ]
+        );
+        assert_eq!(
+            texts(&["TABLE".into(), "WAREHOUSE".into()]),
+            [
+                "grants (4):",
+                "▸ DATABASE (1)",
+                "▾ TABLE (2)",
+                "    SELECT on DB.S.T1",
+                "    SELECT on DB.S.T2",
+                "▾ WAREHOUSE (1)",
+                "    USAGE on WH_A",
+            ]
+        );
+        let out = grant_lines(&store, "ANALYST", &["WAREHOUSE".into()]).unwrap();
+        assert_eq!(out[1].fold.as_deref(), Some("DATABASE"));
+        assert_eq!(out.last().unwrap().link.as_ref().unwrap().name, "WH_A");
+    }
+
+    #[test]
+    fn grants_of_an_older_snapshot_are_not_collected() {
+        let store = Store::in_memory();
+        let out = grant_lines(&store, "ANALYST", &[]).unwrap();
+        assert_eq!(out[0].text, "grants: not collected, press R to sync");
     }
 
     fn warehouse(name: &str) -> Warehouse {
@@ -185,7 +309,7 @@ mod tests {
             headers: vec!["name".into()],
             rows: vec![],
         };
-        lines(&store, graph, Entity::Users, &table, &["JANE".into()])
+        lines(&store, graph, Entity::Users, &table, &["JANE".into()], &[])
             .unwrap()
             .into_iter()
             .map(|l| l.text)

@@ -50,6 +50,16 @@ pub struct WarehousePrivilege {
     pub granted_by: Field,
 }
 
+/// Any privilege granted to a role; `name` is the fully qualified object name.
+pub struct Grant {
+    pub role: String,
+    pub privilege: String,
+    pub granted_on: String,
+    pub name: String,
+    pub grant_option: Field,
+    pub granted_by: Field,
+}
+
 /// Provenance of one collected dataset.
 pub struct Dataset {
     pub name: String,
@@ -72,6 +82,7 @@ pub struct Snapshot {
     pub user_roles: Vec<UserRole>,
     pub role_edges: Vec<RoleEdge>,
     pub warehouse_privileges: Vec<WarehousePrivilege>,
+    pub grants: Vec<Grant>,
     pub datasets: Vec<Dataset>,
 }
 
@@ -181,12 +192,6 @@ async fn show_exact(s: &Session, object: &str, name: &str) -> Result<Rows, Strin
     Ok(r)
 }
 
-fn is_role_or_warehouse_grant(r: &Rows, i: usize) -> bool {
-    let on = r.get(i, "granted_on");
-    (on.as_deref() == Some("ROLE") && r.get(i, "privilege").as_deref() == Some("USAGE"))
-        || on.as_deref() == Some("WAREHOUSE")
-}
-
 /// Re-reads one entity and its grants with targeted SHOW commands; the result holds only the affected rows.
 pub async fn refresh(s: &Session, entity: Entity, name: &str) -> Result<Snapshot, String> {
     let mut snap = Snapshot::default();
@@ -208,14 +213,13 @@ pub async fn refresh(s: &Session, entity: Entity, name: &str) -> Result<Snapshot
             let r = show_exact(s, "ROLES", name).await?;
             snap.roles.push(role_at(&r, 0));
             let to = s.query(&format!("SHOW GRANTS TO ROLE {q}")).await?;
-            (snap.role_edges, snap.warehouse_privileges) =
-                split_role_grants(&keep(to, is_role_or_warehouse_grant));
+            (snap.role_edges, snap.warehouse_privileges) = split_role_grants(&to);
+            snap.grants = role_grants(&to);
             let of = s.query(&format!("SHOW GRANTS OF ROLE {q}")).await?;
             let (users, parents) = role_holders(name, &of);
             snap.user_roles = users;
             snap.role_edges.extend(parents);
-            let rows =
-                snap.user_roles.len() + snap.role_edges.len() + snap.warehouse_privileges.len();
+            let rows = snap.user_roles.len() + snap.role_edges.len() + snap.grants.len();
             snap.datasets.push(dataset(
                 &format!("refresh roles {name}"),
                 "SHOW GRANTS TO/OF ROLE",
@@ -323,13 +327,14 @@ fn access_denied(e: String) -> Result<String, String> {
     }
 }
 
-/// Splits GRANTS_TO_ROLES rows into role inheritance edges and warehouse privileges.
+/// Splits GRANTS_TO_ROLES rows into role inheritance edges and warehouse privileges, ignoring other grants.
 fn split_role_grants(r: &Rows) -> (Vec<RoleEdge>, Vec<WarehousePrivilege>) {
     let (mut edges, mut privileges) = (Vec::new(), Vec::new());
     for i in 0..r.rows.len() {
         let name = r.get(i, "name").unwrap_or_default();
         let grantee = r.get(i, "grantee_name").unwrap_or_default();
-        if r.get(i, "granted_on").as_deref() == Some("ROLE") {
+        let on = r.get(i, "granted_on");
+        if on.as_deref() == Some("ROLE") && r.get(i, "privilege").as_deref() == Some("USAGE") {
             // GRANT ROLE <name> TO ROLE <grantee>: the grantee (parent) inherits the named (child) role.
             edges.push(RoleEdge {
                 parent: grantee,
@@ -337,7 +342,7 @@ fn split_role_grants(r: &Rows) -> (Vec<RoleEdge>, Vec<WarehousePrivilege>) {
                 granted_by: r.get(i, "granted_by"),
                 created_on: r.get(i, "created_on"),
             });
-        } else {
+        } else if on.as_deref() == Some("WAREHOUSE") {
             privileges.push(WarehousePrivilege {
                 role: grantee,
                 warehouse: name,
@@ -348,6 +353,35 @@ fn split_role_grants(r: &Rows) -> (Vec<RoleEdge>, Vec<WarehousePrivilege>) {
         }
     }
     (edges, privileges)
+}
+
+// ACCOUNT_USAGE splits the qualified name into TABLE_CATALOG and TABLE_SCHEMA; SHOW GRANTS already qualifies NAME.
+fn role_grants(r: &Rows) -> Vec<Grant> {
+    (0..r.rows.len())
+        .map(|i| {
+            let on = r.get(i, "granted_on").unwrap_or_default();
+            let name = r.get(i, "name").unwrap_or_default();
+            let scope = match on.as_str() {
+                "DATABASE" => vec![],
+                "SCHEMA" => vec![r.get(i, "table_catalog")],
+                _ => vec![r.get(i, "table_catalog"), r.get(i, "table_schema")],
+            };
+            let mut parts: Vec<String> = scope
+                .into_iter()
+                .flatten()
+                .filter(|p| !p.is_empty())
+                .collect();
+            parts.push(name);
+            Grant {
+                role: r.get(i, "grantee_name").unwrap_or_default(),
+                privilege: r.get(i, "privilege").unwrap_or_default(),
+                granted_on: on,
+                name: parts.join("."),
+                grant_option: r.get(i, "grant_option"),
+                granted_by: r.get(i, "granted_by"),
+            }
+        })
+        .collect()
 }
 
 /// Collects a full metadata snapshot; access denied on an ACCOUNT_USAGE grant dataset records it as failed, any other error aborts.
@@ -418,11 +452,12 @@ pub async fn collect(s: &Session, log: Log<'_>) -> Result<Snapshot, String> {
 
     log("Collecting role grants (can take a few minutes)...");
     let src = "ACCOUNT_USAGE.GRANTS_TO_ROLES";
-    match run(s, log, "SELECT TO_VARCHAR(CREATED_ON) AS CREATED_ON, PRIVILEGE, GRANTED_ON, NAME, GRANTEE_NAME, GRANT_OPTION, GRANTED_BY FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_ROLES WHERE DELETED_ON IS NULL AND GRANTED_TO = 'ROLE' AND ((GRANTED_ON = 'ROLE' AND PRIVILEGE = 'USAGE') OR GRANTED_ON = 'WAREHOUSE')")
+    match run(s, log, "SELECT TO_VARCHAR(CREATED_ON) AS CREATED_ON, PRIVILEGE, GRANTED_ON, TABLE_CATALOG, TABLE_SCHEMA, NAME, GRANTEE_NAME, GRANT_OPTION, GRANTED_BY FROM SNOWFLAKE.ACCOUNT_USAGE.GRANTS_TO_ROLES WHERE DELETED_ON IS NULL AND GRANTED_TO = 'ROLE'")
         .await
     {
         Ok(r) => {
             (snap.role_edges, snap.warehouse_privileges) = split_role_grants(&r);
+            snap.grants = role_grants(&r);
             snap.datasets.push(dataset(
                 "role_edges",
                 src,
@@ -435,10 +470,16 @@ pub async fn collect(s: &Session, log: Log<'_>) -> Result<Snapshot, String> {
                 Some(USAGE_LATENCY),
                 snap.warehouse_privileges.len(),
             ));
+            snap.datasets.push(dataset(
+                "role_grants",
+                src,
+                Some(USAGE_LATENCY),
+                snap.grants.len(),
+            ));
         }
         Err(e) => {
             let msg = access_denied(e)?;
-            for name in ["role_edges", "warehouse_privileges"] {
+            for name in ["role_edges", "warehouse_privileges", "role_grants"] {
                 snap.datasets
                     .push(failed(name, src, Some(USAGE_LATENCY), &msg));
             }
@@ -616,8 +657,31 @@ mod tests {
                 ["USAGE", "WAREHOUSE", "W1", "P1"],
             ],
         );
-        let (edges, privileges) = split_role_grants(&keep(r, is_role_or_warehouse_grant));
+        let (edges, privileges) = split_role_grants(&r);
         assert_eq!(edges.len(), 1);
         assert_eq!(privileges.len(), 1);
+        assert_eq!(role_grants(&r).len(), 4);
+    }
+
+    #[test]
+    fn grant_names_are_qualified_from_account_usage_columns() {
+        let r = rows(
+            [
+                "privilege",
+                "granted_on",
+                "table_catalog",
+                "table_schema",
+                "name",
+                "grantee_name",
+            ],
+            &[
+                ["USAGE", "DATABASE", "DB", "", "DB", "R"],
+                ["USAGE", "SCHEMA", "DB", "S", "S", "R"],
+                ["SELECT", "TABLE", "DB", "S", "T", "R"],
+                ["USAGE", "WAREHOUSE", "", "", "WH", "R"],
+            ],
+        );
+        let names: Vec<String> = role_grants(&r).into_iter().map(|g| g.name).collect();
+        assert_eq!(names, ["DB", "DB.S", "DB.S.T", "WH"]);
     }
 }
