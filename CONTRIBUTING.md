@@ -31,11 +31,10 @@ New to Rust? Read [The Rust Book](https://doc.rust-lang.org/book/) chapters 1-10
 
 ## Releasing
 
-Bump `version` in `crates/flurry/Cargo.toml`, merge to `main`, then push a matching tag; `.github/workflows/release.yml` builds the archives and publishes the release.
+1. Open a PR that bumps `version` in `crates/flurry/Cargo.toml` and `crates/flurry-graph/Cargo.toml` and refreshes `Cargo.lock`, then merge it.
+2. Tag the merged commit and push the tag: `git tag -a vX.Y.Z origin/main && git push origin vX.Y.Z`.
 
-```bash
-git tag v0.1.0 && git push origin v0.1.0
-```
+`.github/workflows/release.yml` fails without publishing when the tag differs from the `Cargo.toml` version, then builds the archives and publishes the release.
 
 ## Architecture boundaries
 
