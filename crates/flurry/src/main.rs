@@ -282,9 +282,9 @@ async fn sync(p: &Profile) -> Result<(), String> {
 
 async fn refresh(kind: Option<Kind>, name: Option<String>, p: &Profile) -> Result<(), String> {
     let mut store = Store::open()?;
-    if store.latest()?.is_none() {
-        return Err("No snapshot yet. Run `flurry sync` first.".into());
-    }
+    let latest = store
+        .latest()?
+        .ok_or("No snapshot yet. Run `flurry sync` first.")?;
     let all = kind.is_none();
     let targets: Vec<(Entity, String)> = match (kind, name) {
         (Some(k), Some(n)) => vec![(entity_of(k), n)],
@@ -299,6 +299,8 @@ async fn refresh(kind: Option<Kind>, name: Option<String>, p: &Profile) -> Resul
         }
     };
     let session = connect(p.profile.as_deref()).await?;
+    let identity = session.query(collect::IDENTITY_SQL).await?;
+    collect::ensure_same_account(&latest.rows[0][5], &collect::fingerprint(&identity))?;
     let (mut totals, mut skipped): (Vec<collect::Dataset>, usize) = (Vec::new(), 0);
     for (entity, name) in &targets {
         let mut snap = match collect::refresh(&session, *entity, name).await {

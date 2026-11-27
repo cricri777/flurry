@@ -166,6 +166,16 @@ pub fn fingerprint(id: &Rows) -> String {
     }
 }
 
+/// Refuses to merge data from another account into a snapshot; legacy snapshots without a fingerprint are accepted.
+pub fn ensure_same_account(stored: &str, current: &str) -> Result<(), String> {
+    if stored.is_empty() || stored == current {
+        return Ok(());
+    }
+    Err(format!(
+        "The latest snapshot is from account {stored} but this login is {current}. Run `flurry sync` to take a new snapshot."
+    ))
+}
+
 /// Quotes a Snowflake identifier so raw input can never alter the statement.
 pub fn quote_ident(name: &str) -> String {
     format!("\"{}\"", name.replace('"', "\"\""))
@@ -621,6 +631,14 @@ mod tests {
             short("SELECT A, B FROM SNOWFLAKE.ACCOUNT_USAGE.X WHERE DELETED_ON IS NULL"),
             "SELECT ... FROM SNOWFLAKE.ACCOUNT_USAGE.X"
         );
+    }
+
+    #[test]
+    fn refresh_refuses_a_different_account() {
+        assert!(ensure_same_account("ACME-PROD (R1)", "ACME-PROD (R1)").is_ok());
+        assert!(ensure_same_account("", "ACME-PROD (R1)").is_ok());
+        let err = ensure_same_account("ACME-PROD (R1)", "OTHER-DEV (R1)").unwrap_err();
+        assert!(err.contains("ACME-PROD (R1)") && err.contains("OTHER-DEV (R1)"));
     }
 
     #[test]
