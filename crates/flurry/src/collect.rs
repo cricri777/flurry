@@ -384,6 +384,9 @@ fn role_grants(r: &Rows) -> Vec<Grant> {
         .collect()
 }
 
+/// Number of "Collecting ..." steps `collect` logs, for the TUI progress bar.
+pub const STEPS: usize = 5;
+
 /// Collects a full metadata snapshot; access denied on an ACCOUNT_USAGE grant dataset records it as failed, any other error aborts.
 pub async fn collect(s: &Session, log: Log<'_>) -> Result<Snapshot, String> {
     let mut snap = Snapshot::default();

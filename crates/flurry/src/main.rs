@@ -628,20 +628,39 @@ fn drain_sync(
             continue;
         };
         match msg {
-            SyncMsg::Line(line) => status.lines.push(line),
+            SyncMsg::Line(line) => status.log(line),
             SyncMsg::Done(result) => {
                 let saved = result.and_then(|snap| {
                     let id = store.save(&status.profile, &snap)?;
                     Ok((id, snap))
                 });
-                match saved {
+                let ok = saved.is_ok();
+                let notice = match saved {
                     Ok((id, snap)) => {
                         status.lines.extend(summary(id, &snap));
                         *graph = store.graph().map_err(std::io::Error::other)?;
+                        let partial = snap.datasets.iter().any(|d| d.error.is_some());
+                        format!(
+                            "Sync {} done: snapshot {id} saved{}",
+                            status.profile,
+                            if partial {
+                                " (some datasets failed)"
+                            } else {
+                                ""
+                            }
+                        )
                     }
-                    Err(e) => status.lines.push(format!("Failed: {e}")),
+                    Err(e) => {
+                        status.lines.push(format!("Failed: {e}"));
+                        let first = e.lines().next().unwrap_or_default();
+                        format!("Sync {} failed: {first}", status.profile)
+                    }
+                };
+                status.finish(ok);
+                if !status.shown {
+                    s.sync_status = None;
+                    s.notice = Some(notice);
                 }
-                status.finished = true;
                 done = true;
             }
         }
@@ -650,7 +669,10 @@ fn drain_sync(
 }
 
 fn key_is_picker_request(s: &State, key: Key) -> bool {
-    s.mode == Mode::Normal && s.picker.is_none() && matches!(key, Key::Char('R'))
+    s.mode == Mode::Normal
+        && s.picker.is_none()
+        && s.sync_status.is_none()
+        && matches!(key, Key::Char('R'))
 }
 
 fn open_picker(s: &mut State) {
@@ -742,21 +764,18 @@ async fn run_tui(
         let detail: Vec<String> = lines.iter().map(|l| l.text.clone()).collect();
         let (w, h) = terminal::size()?;
         let out = ui::render(&items, &detail, &mut s, w as usize, h as usize, theme);
+        // Overwrite in place instead of clearing the screen, so the spinner does not flicker.
+        execute!(stdout(), crossterm::cursor::MoveTo(0, 0))?;
+        print!("{}", out.replace("\r\n", "\x1b[K\r\n"));
         execute!(
             stdout(),
-            crossterm::cursor::MoveTo(0, 0),
-            terminal::Clear(terminal::ClearType::All)
+            terminal::Clear(terminal::ClearType::UntilNewLine),
+            terminal::Clear(terminal::ClearType::FromCursorDown)
         )?;
-        print!("{out}");
         stdout().flush()?;
-        if let Some((_, rx)) = &running {
-            let mut changed = false;
-            while !changed && !event::poll(Duration::from_millis(100))? {
-                (changed, _) = drain_sync(rx, &mut s, store, graph)?;
-            }
-            if changed {
-                continue;
-            }
+        if running.is_some() && !event::poll(Duration::from_millis(100))? {
+            s.tick = s.tick.wrapping_add(1);
+            continue;
         }
         let Event::Key(k) = event::read()? else {
             continue;
@@ -790,7 +809,7 @@ async fn run_tui(
         }
         if s.mode == Mode::Normal
             && s.picker.is_none()
-            && s.sync_status.is_none()
+            && !s.sync_status.as_ref().is_some_and(|st| st.shown)
             && matches!(key, Key::Char('y'))
         {
             s.notice = Some(match yank_text(&s, &items, &lines) {
@@ -811,11 +830,7 @@ async fn run_tui(
             task.abort();
         }
         if let Some(profile) = s.sync.take() {
-            s.sync_status = Some(SyncStatus {
-                profile: profile.clone(),
-                lines: vec![format!("Connecting with profile {profile}...")],
-                finished: false,
-            });
+            s.sync_status = Some(SyncStatus::new(profile.clone()));
             running = Some(start_sync(profile));
         }
     }

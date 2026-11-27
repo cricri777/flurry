@@ -1,3 +1,4 @@
+use crate::collect::STEPS;
 use crate::modes::{Focus, Mode, State, SyncStatus, Tab};
 use crossterm::style::{Attribute, Color, Stylize};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
@@ -106,17 +107,51 @@ fn pane(title: &str, body: Vec<String>, width: usize, focused: bool, t: &Theme) 
     out
 }
 
-fn sync_pane(status: &SyncStatus, width: usize, rows: usize, t: &Theme) -> Vec<String> {
-    let title = if status.finished {
-        format!("Sync {} finished", status.profile)
+const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+fn spinner(tick: usize) -> char {
+    SPINNER[tick % SPINNER.len()]
+}
+
+// "3/5 warehouses" while collecting, "connecting" before the first step.
+fn progress_label(status: &SyncStatus) -> String {
+    match &status.phase {
+        Some(phase) => format!("{}/{STEPS} {phase}", status.done + 1),
+        None if status.done > 0 || status.finished => format!("{}/{STEPS}", status.done),
+        None => "connecting".into(),
+    }
+}
+
+fn progress_bar(done: usize) -> String {
+    const CELLS: usize = 10;
+    let full = (done * CELLS / STEPS).min(CELLS);
+    format!("[{}{}]", "█".repeat(full), "░".repeat(CELLS - full))
+}
+
+fn sync_pane(
+    status: &SyncStatus,
+    tick: usize,
+    width: usize,
+    rows: usize,
+    t: &Theme,
+) -> Vec<String> {
+    let (title, lead) = if status.finished {
+        (format!("Sync {} finished", status.profile), ' ')
     } else {
-        format!("Syncing {}...", status.profile)
+        (format!("Syncing {}...", status.profile), spinner(tick))
     };
     let inner = width.saturating_sub(2).max(1);
-    let shown = status.lines.len().saturating_sub(rows);
-    let body = (shown..shown + rows)
+    let logs = rows.saturating_sub(1);
+    let shown = status.lines.len().saturating_sub(logs);
+    let mut body: Vec<String> = (shown..shown + logs)
         .map(|i| fit(status.lines.get(i).map_or("", |l| l.as_str()), inner))
         .collect();
+    let bar = format!(
+        "{lead} {} {}",
+        progress_bar(status.done),
+        progress_label(status)
+    );
+    body.push(fit(&bar, inner).with(t.accent).to_string());
     pane(&title, body, width, true, t)
 }
 
@@ -205,8 +240,9 @@ pub fn render(
         focus == Focus::Detail,
         t,
     );
-    let panes: Vec<String> = match (&s.sync_status, split, focus) {
-        (Some(status), _, _) => sync_pane(status, width, rows, t),
+    let window = s.sync_status.as_ref().filter(|st| st.shown);
+    let panes: Vec<String> = match (window, split, focus) {
+        (Some(status), _, _) => sync_pane(status, s.tick, width, rows, t),
         (None, true, _) => list.into_iter().zip(det).map(|(a, b)| a + &b).collect(),
         (None, false, Focus::List) => list,
         (None, false, Focus::Detail) => det,
@@ -236,11 +272,20 @@ pub fn render(
         Mode::Command => ":",
         Mode::Normal => "",
     };
+    let background = s.sync_status.as_ref().map_or(String::new(), |st| {
+        format!(
+            "{} Sync {} {}  R details  x cancel",
+            spinner(s.tick),
+            st.profile,
+            progress_label(st)
+        )
+    });
     // The status line never wraps: the hint is dropped first, then the typed text is cut from the left.
     let hint = match &s.notice {
         Some(notice) => notice.as_str(),
-        None if s.sync_status.as_ref().is_some_and(|st| st.finished) => "Enter close",
-        None if s.sync_status.is_some() => "Esc/q cancel",
+        None if window.is_some_and(|st| st.finished) => "Enter/Esc close",
+        None if window.is_some() => "Esc/q hide  x cancel",
+        None if s.sync_status.is_some() => &background,
         None if s.picker.is_some() => "j/k ^d/^u choose  Enter sync  Esc/q cancel",
         None if s.focus == Focus::Detail => {
             "Enter open/fold  L/H lineage  ^O back  y copy  h list  / search  R sync  q quit"
@@ -381,14 +426,51 @@ mod tests {
         let items = vec!["ANALYST".to_string()];
         let mut s = State::new(Tab::Roles);
         s.sync_status = Some(SyncStatus {
-            profile: "prod".into(),
             lines: (0..20).map(|i| format!("step {i}")).collect(),
-            finished: false,
+            ..SyncStatus::new("prod".into())
         });
         let out = render(&items, &[], &mut s, 100, 10, &Theme::terminal());
-        assert!(out.contains("Syncing prod...") && out.contains("step 19"));
+        assert!(out.contains("Syncing prod...") && out.contains("step 18"));
         assert!(!out.contains("step 0 ") && !out.contains("ANALYST"));
-        assert!(status_line(&out).contains("Esc/q cancel"));
+        assert!(status_line(&out).contains("Esc/q hide  x cancel"));
+    }
+
+    #[test]
+    fn sync_window_shows_a_spinner_and_a_bar_that_fill_up() {
+        let items = vec!["ANALYST".to_string()];
+        let mut s = State::new(Tab::Roles);
+        let mut st = SyncStatus::new("prod".into());
+        let at = |s: &mut State, tick| {
+            s.tick = tick;
+            render(&items, &[], s, 100, 10, &Theme::terminal())
+        };
+        s.sync_status = Some(st.clone());
+        let out = at(&mut s, 0);
+        assert!(out.contains("⠋ [░░░░░░░░░░] connecting"));
+        assert!(at(&mut s, 1).contains("⠙ [░░░░░░░░░░]"));
+        st.log("Collecting users...".into());
+        st.log("Collecting roles...".into());
+        s.sync_status = Some(st.clone());
+        assert!(at(&mut s, 0).contains("[██░░░░░░░░] 2/5 roles"));
+        st.finish(true);
+        s.sync_status = Some(st);
+        let out = at(&mut s, 0);
+        assert!(out.contains("Sync prod finished") && out.contains("[████░░░░░░] 2/5"));
+        assert!(!out.contains('⠋') && status_line(&out).contains("Enter/Esc close"));
+    }
+
+    #[test]
+    fn hidden_sync_keeps_the_panes_and_shows_progress_in_the_status_line() {
+        let items = vec!["ANALYST".to_string()];
+        let mut s = State::new(Tab::Roles);
+        let mut st = SyncStatus::new("prod".into());
+        st.log("Collecting warehouses...".into());
+        st.shown = false;
+        s.sync_status = Some(st);
+        let out = render(&items, &[], &mut s, 100, 10, &Theme::terminal());
+        assert!(out.contains("ANALYST") && !out.contains("Syncing prod..."));
+        let line = status_line(&out);
+        assert!(line.contains("Sync prod 1/5 warehouses") && line.contains("x cancel"));
     }
 
     #[test]
