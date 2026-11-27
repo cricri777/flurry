@@ -46,6 +46,43 @@ pub struct SyncStatus {
     pub profile: String,
     pub lines: Vec<String>,
     pub finished: bool,
+    /// Collection steps completed so far.
+    pub done: usize,
+    /// Collection step in progress, if any.
+    pub phase: Option<String>,
+    /// Whether the log window is open; otherwise the sync runs behind the normal views.
+    pub shown: bool,
+}
+
+impl SyncStatus {
+    pub fn new(profile: String) -> Self {
+        SyncStatus {
+            lines: vec![format!("Connecting with profile {profile}...")],
+            profile,
+            finished: false,
+            done: 0,
+            phase: None,
+            shown: true,
+        }
+    }
+
+    /// Appends a log line; a "Collecting <what>..." line starts the next step.
+    pub fn log(&mut self, line: String) {
+        if let Some(what) = line.strip_prefix("Collecting ") {
+            if self.phase.is_some() {
+                self.done += 1;
+            }
+            self.phase = what.split(['.', '(']).next().map(|w| w.trim().to_string());
+        }
+        self.lines.push(line);
+    }
+
+    pub fn finish(&mut self, ok: bool) {
+        if self.phase.take().is_some() && ok {
+            self.done += 1;
+        }
+        self.finished = true;
+    }
 }
 
 // Where the user was before following a link.
@@ -79,6 +116,8 @@ pub struct State {
     pub picker: Option<Picker>,
     pub sync: Option<String>,
     pub sync_status: Option<SyncStatus>,
+    /// Animation frame counter, advanced by the event loop while a sync runs.
+    pub tick: usize,
     /// Grant types unfolded in the role details; kept when moving between roles.
     pub expanded: Vec<String>,
     history: Vec<View>,
@@ -102,6 +141,7 @@ impl State {
             picker: None,
             sync: None,
             sync_status: None,
+            tick: 0,
             expanded: Vec::new(),
             history: Vec::new(),
             quit: false,
@@ -199,13 +239,34 @@ pub fn handle_key(mut s: State, key: Key, size: usize, page: usize, line: Option
     let next = Tab::ALL[(i + 1) % 3];
     let prev = Tab::ALL[(i + 2) % 3];
     s.notice = None;
-    if let Some(status) = &s.sync_status {
-        if matches!(key, Key::Esc | Key::Char('q'))
-            || (status.finished && matches!(key, Key::Enter))
-        {
-            s.sync_status = None;
+    if let Some(status) = s.sync_status.as_mut() {
+        let (finished, shown) = (status.finished, status.shown);
+        if shown {
+            match key {
+                Key::Char('x') if !finished => {
+                    s.sync_status = None;
+                    s.notice = Some("Sync cancelled".into());
+                }
+                Key::Char('x') | Key::Esc | Key::Char('q') | Key::Enter if finished => {
+                    s.sync_status = None
+                }
+                Key::Esc | Key::Char('q') => status.shown = false,
+                _ => {}
+            }
+            return s;
         }
-        return s;
+        match key {
+            Key::Char('R') if s.mode == Mode::Normal => {
+                status.shown = true;
+                return s;
+            }
+            Key::Char('x') if s.mode == Mode::Normal => {
+                s.sync_status = None;
+                s.notice = Some("Sync cancelled".into());
+                return s;
+            }
+            _ => {}
+        }
     }
     if let Some(picker) = s.picker.as_mut() {
         let last = picker.profiles.len().saturating_sub(1);
@@ -546,22 +607,79 @@ mod tests {
         assert_eq!((s.sync.as_deref(), s.picker), (Some("prod"), None));
     }
 
-    #[test]
-    fn sync_status_swallows_keys_until_esc_or_enter_once_finished() {
+    fn syncing(shown: bool) -> State {
         let mut s = start();
         s.sync_status = Some(SyncStatus {
-            profile: "dev".into(),
-            lines: Vec::new(),
-            finished: false,
+            shown,
+            ..SyncStatus::new("dev".into())
         });
-        let s = press(s, &[Key::Char('R'), Key::Enter]);
+        s
+    }
+
+    #[test]
+    fn open_sync_window_swallows_keys_and_esc_hides_it_without_cancelling() {
+        let s = press(syncing(true), &[Key::Char('R'), Key::Enter, Key::Tab]);
+        assert!(s.sync_status.as_ref().is_some_and(|st| st.shown) && s.picker.is_none());
+        let hidden = press(s.clone(), &[Key::Esc]);
+        assert!(hidden.sync_status.as_ref().is_some_and(|st| !st.shown));
+        let hidden = press(s, &[Key::Char('q')]);
+        assert!(hidden.sync_status.is_some() && !hidden.quit);
+    }
+
+    #[test]
+    fn finished_sync_window_closes_on_enter_esc_or_q() {
+        for key in [Key::Enter, Key::Esc, Key::Char('q'), Key::Char('x')] {
+            let mut s = syncing(true);
+            s.sync_status.as_mut().unwrap().finish(true);
+            let s = press(s, &[key]);
+            assert!(s.sync_status.is_none() && s.notice.is_none() && !s.quit);
+        }
+    }
+
+    #[test]
+    fn x_cancels_a_running_sync_from_the_window_or_behind_the_views() {
+        for shown in [true, false] {
+            let s = press(syncing(shown), &[Key::Char('x')]);
+            assert!(s.sync_status.is_none() && s.notice.as_deref() == Some("Sync cancelled"));
+        }
+    }
+
+    #[test]
+    fn hidden_sync_keeps_navigation_and_r_reopens_the_window() {
+        let s = press(syncing(false), &[Key::Tab]);
+        assert_eq!(s.tab, Tab::Warehouses);
+        assert!(s.sync_status.as_ref().is_some_and(|st| !st.shown));
+        let s = press(s, &[Key::Char('R')]);
+        assert!(s.sync_status.is_some_and(|st| st.shown) && s.picker.is_none());
+    }
+
+    #[test]
+    fn hidden_sync_does_not_steal_typed_x_or_r() {
+        let s = press(
+            syncing(false),
+            &[Key::Char('/'), Key::Char('x'), Key::Char('R')],
+        );
+        assert_eq!(s.buffer, "xR");
         assert!(s.sync_status.is_some());
-        let mut done = s.clone();
-        done.sync_status.as_mut().unwrap().finished = true;
-        assert!(press(done, &[Key::Enter]).sync_status.is_none());
-        assert!(press(s.clone(), &[Key::Esc]).sync_status.is_none());
-        let closed = press(s, &[Key::Char('q')]);
-        assert!(closed.sync_status.is_none() && !closed.quit);
+    }
+
+    #[test]
+    fn collecting_lines_advance_the_progress_steps() {
+        let mut st = SyncStatus::new("dev".into());
+        assert_eq!((st.done, st.phase.as_deref()), (0, None));
+        st.log("> SELECT 1".into());
+        st.log("Collecting users...".into());
+        st.log("Collecting user-role grants (can take a few minutes)...".into());
+        assert_eq!(
+            (st.done, st.phase.as_deref()),
+            (1, Some("user-role grants"))
+        );
+        st.finish(true);
+        assert_eq!((st.done, st.phase.as_deref(), st.finished), (2, None, true));
+        let mut failed = SyncStatus::new("dev".into());
+        failed.log("Collecting roles...".into());
+        failed.finish(false);
+        assert_eq!((failed.done, failed.finished), (0, true));
     }
 
     #[test]

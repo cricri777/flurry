@@ -11,7 +11,7 @@ import termios
 import time
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
-CLEAR = "\x1b[2J"
+CLEAR = "\x1b[1;1H"  # every frame starts by moving the cursor home
 
 
 def read(fd: int, wait: float) -> str:

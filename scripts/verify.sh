@@ -54,7 +54,7 @@ done
 ! tui_empty R '\x1b' | grep -qF "Sync from profile" || { echo "FAIL: Esc did not close the picker"; exit 1; }
 
 failed=$(tui_empty R '\r')
-for needle in "Sync prod finished" "Failed: Missing 'user'" "Enter close"; do
+for needle in "Sync prod finished" "Failed: Missing 'user'" "0/5" "Enter/Esc close"; do
   grep -qF -- "$needle" <<<"$failed" || { echo "FAIL: '$needle' missing from the sync window"; echo "$failed"; exit 1; }
 done
 ! tui_empty R '\r' '\r' | grep -qF "finished" || { echo "FAIL: Enter did not close the sync window"; exit 1; }
