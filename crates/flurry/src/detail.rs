@@ -2,7 +2,10 @@ use crate::modes::{Link, Tab};
 use crate::store::{Entity, Related, Store, Table};
 use flurry_graph::{Access, AccessPath, Graph};
 
-/// One detail pane line; `link` names the entity it opens and `fold` the grant type it unfolds.
+/// Fold key of the lineage tree in `State::expanded`; grant types are upper-case so it cannot clash.
+pub const LINEAGE: &str = "lineage";
+
+/// One detail pane line; `link` names the entity it opens and `fold` the grant type or tree it unfolds.
 pub struct Line {
     pub text: String,
     pub link: Option<Link>,
@@ -50,6 +53,34 @@ fn grant_lines(store: &Store, role: &str, expanded: &[String]) -> Result<Vec<Lin
         }));
     }
     Ok(out)
+}
+
+// Roles inheriting `role`, as a tree under a fold line; the tree is only listed when `expanded`.
+fn lineage_lines(graph: &Graph, role: &str, expanded: &[String]) -> Vec<Line> {
+    let tree = graph.lineage(role);
+    let open = expanded.iter().any(|f| f == LINEAGE);
+    let roots = tree.iter().filter(|n| !n.repeated).count();
+    let mut out = vec![Line {
+        text: format!("{} lineage ({roots})", if open { "▾" } else { "▸" }),
+        link: None,
+        fold: Some(LINEAGE.into()),
+    }];
+    if open {
+        out.extend(tree.into_iter().map(|n| Line {
+            text: format!(
+                "{}{}{}",
+                "  ".repeat(n.depth),
+                n.role,
+                if n.repeated { " (see above)" } else { "" }
+            ),
+            link: Some(Link {
+                tab: Tab::Roles,
+                name: n.role,
+            }),
+            fold: None,
+        }));
+    }
+    out
 }
 
 pub fn chain(path: &AccessPath) -> String {
@@ -140,6 +171,8 @@ pub fn lines(
     }
     if matches!(entity, Entity::Roles) {
         out.push(plain(String::new()));
+        out.extend(lineage_lines(graph, &row[0], expanded));
+        out.push(plain(String::new()));
         out.extend(grant_lines(store, &row[0], expanded)?);
     }
     Ok(out)
@@ -168,6 +201,38 @@ mod tests {
         .unwrap();
         assert_eq!(out[0].text, "owner: SECURITYADMIN");
         assert!(out.iter().any(|l| l.text == "inherits (0):"));
+    }
+
+    #[test]
+    fn lineage_is_folded_until_expanded() {
+        let mut graph = Graph::default();
+        graph.add_role_edge("LEAD", "ANALYST");
+        graph.add_role_edge("ADMIN", "LEAD");
+        let store = Store::in_memory();
+        let table = Table {
+            headers: vec!["name".into()],
+            rows: vec![],
+        };
+        let text = |expanded: &[String]| -> Vec<String> {
+            lines(
+                &store,
+                &graph,
+                Entity::Roles,
+                &table,
+                &["ANALYST".into()],
+                expanded,
+            )
+            .unwrap()
+            .into_iter()
+            .map(|l| l.text)
+            .collect()
+        };
+        let folded = text(&[]);
+        assert!(folded.contains(&"▸ lineage (2)".to_string()));
+        assert!(!folded.contains(&"    ADMIN".to_string()));
+        let open = text(&[LINEAGE.to_string()]);
+        let at = open.iter().position(|l| l == "▾ lineage (2)").unwrap();
+        assert_eq!(open[at + 1..at + 3], ["  LEAD", "    ADMIN"]);
     }
 
     #[test]

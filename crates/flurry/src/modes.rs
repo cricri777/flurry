@@ -1,4 +1,4 @@
-use crate::detail::Line;
+use crate::detail::{LINEAGE, Line};
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Mode {
@@ -131,6 +131,16 @@ impl State {
         self.goto = Some(link.name.clone());
     }
 
+    // Opens or closes the lineage tree of the selected role.
+    fn set_lineage(&mut self, open: bool) {
+        if self.tab == Tab::Roles && self.focus == Focus::Detail {
+            self.expanded.retain(|f| f != LINEAGE);
+            if open {
+                self.expanded.push(LINEAGE.into());
+            }
+        }
+    }
+
     fn toggle(&mut self, fold: &str) {
         match self.expanded.iter().position(|f| f == fold) {
             Some(i) => _ = self.expanded.remove(i),
@@ -233,6 +243,8 @@ pub fn handle_key(mut s: State, key: Key, size: usize, page: usize, line: Option
             _ if matches!(key, Key::Char(' ')) => {}
             _ => s.focus = Focus::Detail,
         },
+        (Mode::Normal, Key::Char('L')) => s.set_lineage(true),
+        (Mode::Normal, Key::Char('H')) => s.set_lineage(false),
         (Mode::Normal, Key::Backspace | Key::Back) => s.back(),
         (Mode::Normal, Key::Char('h') | Key::Left) => s.focus = Focus::List,
         (Mode::Normal, Key::Esc) if s.focus == Focus::Detail => s.focus = Focus::List,
@@ -477,6 +489,18 @@ mod tests {
         let s = press(s, &[Key::Char('h'), Key::Char('j'), Key::Char('l')]);
         assert_eq!(s.expanded, ["TABLE"]);
         let s = handle_key(s, Key::Char(' '), 3, 4, Some(&fold));
+        assert!(s.expanded.is_empty());
+    }
+
+    #[test]
+    fn capital_l_and_h_open_and_close_the_lineage_in_a_role_detail() {
+        let s = press(start(), &[Key::Char('L')]);
+        assert!(s.expanded.is_empty());
+        let s = press(s, &[Key::Char('l'), Key::Char('L'), Key::Char('L')]);
+        assert_eq!(s.expanded, [LINEAGE]);
+        let s = press(s, &[Key::Char('H')]);
+        assert!(s.expanded.is_empty());
+        let s = press(State::new(Tab::Users), &[Key::Char('l'), Key::Char('L')]);
         assert!(s.expanded.is_empty());
     }
 

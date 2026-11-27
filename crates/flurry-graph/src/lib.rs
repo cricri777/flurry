@@ -32,6 +32,16 @@ pub struct AccessPath {
     pub roles: Vec<String>,
 }
 
+/// One role of the tree of roles that inherit a role.
+#[derive(Debug, PartialEq, Eq)]
+pub struct LineageNode {
+    pub role: String,
+    /// 1 for a role inheriting the root directly.
+    pub depth: usize,
+    /// Already listed earlier, so the roles inheriting it are not listed again.
+    pub repeated: bool,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub enum Access {
     Granted {
@@ -90,6 +100,31 @@ impl Graph {
     /// Roles that inherit `role`, directly or transitively.
     pub fn inheriting_roles(&self, role: &str) -> Vec<String> {
         reach(&self.parents, role)
+    }
+
+    /// Depth-first tree of the roles that inherit `role`; each role is expanded once, which also stops cycles.
+    pub fn lineage(&self, role: &str) -> Vec<LineageNode> {
+        let mut seen = BTreeSet::from([role]);
+        let mut out = Vec::new();
+        let mut stack = self.parents_of(role, 1);
+        while let Some((name, depth)) = stack.pop() {
+            let repeated = !seen.insert(name);
+            out.push(LineageNode {
+                role: name.to_string(),
+                depth,
+                repeated,
+            });
+            if !repeated {
+                stack.extend(self.parents_of(name, depth + 1));
+            }
+        }
+        out
+    }
+
+    // Parents in reverse order so that popping the stack lists them alphabetically.
+    fn parents_of(&self, role: &str, depth: usize) -> Vec<(&str, usize)> {
+        let parents = self.parents.get(role).into_iter().flatten();
+        parents.rev().map(|p| (p.as_str(), depth)).collect()
     }
 
     /// Why `user` can or cannot hold `privilege` on `warehouse`.
@@ -205,6 +240,34 @@ mod tests {
 
     fn chain(r: &[&str]) -> Vec<String> {
         r.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn lineage_lists_inheriting_roles_depth_first_and_marks_repeats() {
+        let mut g = Graph::default();
+        g.add_role_edge("LEAD", "ANALYST");
+        g.add_role_edge("ADMIN", "LEAD");
+        g.add_role_edge("ADMIN", "ANALYST");
+        let nodes = g.lineage("ANALYST");
+        let tree: Vec<(&str, usize, bool)> = nodes
+            .iter()
+            .map(|n| (n.role.as_str(), n.depth, n.repeated))
+            .collect();
+        assert_eq!(
+            tree,
+            [("ADMIN", 1, false), ("LEAD", 1, false), ("ADMIN", 2, true)]
+        );
+        assert!(g.lineage("ADMIN").is_empty());
+    }
+
+    #[test]
+    fn lineage_terminates_on_cycles() {
+        let mut g = Graph::default();
+        g.add_role_edge("A", "B");
+        g.add_role_edge("B", "A");
+        let tree = g.lineage("A");
+        assert_eq!(tree.len(), 2);
+        assert!(tree[1].repeated);
     }
 
     #[test]
