@@ -243,7 +243,7 @@ pub fn render(
         None if s.sync_status.is_some() => "Esc/q cancel",
         None if s.picker.is_some() => "j/k ^d/^u choose  Enter sync  Esc/q cancel",
         None if s.focus == Focus::Detail => {
-            "Enter open/fold  ^O back  y copy  h list  / search  R sync  q quit"
+            "Enter open/fold  L/H lineage  ^O back  y copy  h list  / search  R sync  q quit"
         }
         None => "Tab tabs  j/k ^d/^u move  l detail  y copy  / search  R sync  q quit",
     };
